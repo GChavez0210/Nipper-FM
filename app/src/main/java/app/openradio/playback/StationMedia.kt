@@ -14,10 +14,20 @@ object MediaIds {
     const val PRESETS = "presets"
     const val RECENTS = "recents"
     const val RECENT_ROOT = "recent_root"
+    const val COUNTRIES = "countries"
+    const val GENRES = "genres"
     private const val STATION_PREFIX = "station:"
+    private const val COUNTRY_PREFIX = "country:"
+    private const val GENRE_PREFIX = "genre:"
 
     fun station(uuid: String) = STATION_PREFIX + uuid
     fun stationId(mediaId: String): String? = mediaId.takeIf { it.startsWith(STATION_PREFIX) }?.removePrefix(STATION_PREFIX)
+
+    fun country(code: String) = COUNTRY_PREFIX + code.uppercase()
+    fun countryCode(mediaId: String): String? = mediaId.takeIf { it.startsWith(COUNTRY_PREFIX) }?.removePrefix(COUNTRY_PREFIX)
+
+    fun genre(tag: String) = GENRE_PREFIX + tag
+    fun genreTag(mediaId: String): String? = mediaId.takeIf { it.startsWith(GENRE_PREFIX) }?.removePrefix(GENRE_PREFIX)
 }
 
 /** Keys for session extras (service -> controllers) and custom commands (controllers -> service). */
