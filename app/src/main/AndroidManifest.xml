@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Coarse only: used once at launch to pre-select the user's country in Explore. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-feature android:name="android.hardware.location" android:required="false" />
@@ -58,6 +60,23 @@
         </service>
 
         <service
+            android:name=".playback.ListeningRoutineService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <receiver
+            android:name=".playback.ListeningAlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
+        <service
             android:name=".tile.LastStationTileService"
             android:exported="true"
             android:icon="@drawable/ic_stat_radio"
@@ -71,13 +90,19 @@
                 android:value="true" />
         </service>
 
-        <receiver
-            android:name=".widget.RadioWidgetProvider"
+        <activity
+            android:name=".widget.WidgetSetupActivity"
             android:exported="true">
             <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".widget.RadioWidgetProvider"
+            android:exported="false">
+            <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="app.openradio.widget.ACTION_TOGGLE_PLAY" />
-                <action android:name="app.openradio.widget.ACTION_PLAY_PRESET" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"

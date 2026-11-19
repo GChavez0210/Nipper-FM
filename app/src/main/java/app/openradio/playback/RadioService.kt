@@ -2,11 +2,18 @@ package app.openradio.playback
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
+import androidx.car.app.connection.CarConnection
+import androidx.lifecycle.Observer
 import androidx.annotation.OptIn
 import androidx.core.content.getSystemService
 import androidx.media3.common.AudioAttributes
@@ -42,6 +49,7 @@ import app.openradio.data.remote.RadioBrowserClient
 import app.openradio.domain.AlternateFeedSelector
 import app.openradio.domain.BufferProfile
 import app.openradio.domain.ErrorLogEntry
+import app.openradio.domain.EqPreset
 import app.openradio.domain.FailureKind
 import app.openradio.domain.PlaybackErrorClassifier
 import app.openradio.domain.PlaybackPrefs
@@ -70,6 +78,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.guava.future
@@ -101,6 +110,55 @@ class RadioService : MediaLibraryService() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private var playbackPrefs: PlaybackPrefs = PlaybackPrefs()
+    private var stationEq: EqPreset? = null
+    private var stationSettingsJob: Job? = null
+
+    private fun applyAudioPrefs() {
+        audioFx.applyPrefs(playbackPrefs.copy(eqPreset = stationEq ?: playbackPrefs.eqPreset))
+    }
+
+    private val headsetDeviceTypes = setOf(
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_USB_HEADSET,
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        AudioDeviceInfo.TYPE_BLE_HEADSET,
+        AudioDeviceInfo.TYPE_HEARING_AID,
+    )
+    private var headsetResumeEnabled = false
+    private var resumeAfterDisconnect = false
+    private var headsetResumeJob: Job? = null
+    private val carConnection by lazy { CarConnection(this).type }
+    private val carObserver = Observer<Int> { if (it != CarConnection.CONNECTION_TYPE_NOT_CONNECTED) cancelHeadsetResume() }
+
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            if (!resumeAfterDisconnect) return
+            val device = addedDevices.firstOrNull { it.isSink && it.type in headsetDeviceTypes } ?: return
+            headsetResumeJob?.cancel()
+            headsetResumeJob = scope.launch {
+                // Give projection detection time to settle after a Bluetooth or USB handoff.
+                delay(3_000)
+                val devices = getSystemService<AudioManager>()?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                if (!resumeAfterDisconnect || !headsetResumeEnabled ||
+                    carConnection.value != CarConnection.CONNECTION_TYPE_NOT_CONNECTED ||
+                    session?.connectedControllers.orEmpty().any { it.packageName == "com.google.android.projection.gearhead" } ||
+                    SystemClock.elapsedRealtime() - pausedAtElapsed > 10 * 60_000L ||
+                    devices?.none { it.id == device.id } != false ||
+                    player.currentMediaItem == null || player.playWhenReady || shouldBlockForWifiOnly()
+                ) return@launch
+                resumeAfterDisconnect = false
+                player.prepare()
+                player.play()
+            }
+        }
+    }
+
+    private fun cancelHeadsetResume() {
+        resumeAfterDisconnect = false
+        headsetResumeJob?.cancel()
+    }
+
     private var mobileDataOverrideOnce = false
     private var wifiOnlyBlocked = false
 
@@ -115,6 +173,17 @@ class RadioService : MediaLibraryService() {
     /** Player volume = per-station trim (cuts only) × sleep fade-out. */
     private var trimDb = 0
     private var fadeVolume = 1f
+    private var wakeVolume = 1f
+    private var wakeStationId: String? = null
+    private var wakeRamp: Job? = null
+
+    private fun clearWakeRamp() {
+        wakeStationId = null
+        wakeRamp?.cancel()
+        wakeRamp = null
+        wakeVolume = 1f
+        applyVolume()
+    }
 
     /** Network bytes not yet written to the monthly totals, and bytes for the current station. */
     private val pendingBytes = AtomicLong()
@@ -141,6 +210,7 @@ class RadioService : MediaLibraryService() {
         val dataSourceFactory = DefaultDataSource.Factory(this, http).setTransferListener(byteCounter)
         // Allocate max buffer pool large enough for Cellular Saver (75 s) while starting at Standard
         val loadControl = DefaultLoadControl.Builder()
+            .setBackBuffer(30_000, /* retainBackBufferFromKeyframe = */ false)
             .setBufferDurationsMs(
                 BufferProfile.Cellular.minBufferMs,
                 BufferProfile.Cellular.maxBufferMs,
@@ -170,6 +240,7 @@ class RadioService : MediaLibraryService() {
             scope = scope,
             clock = System::currentTimeMillis,
             onExpired = {
+                cancelHeadsetResume()
                 fadeVolume = 1f
                 applyVolume()
                 player.pause()
@@ -220,7 +291,7 @@ class RadioService : MediaLibraryService() {
         scope.launch {
             prefsRepo.playbackPrefs.collect { prefs ->
                 playbackPrefs = prefs
-                audioFx.applyPrefs(prefs)
+                applyAudioPrefs()
                 if (enforceWifiOnly()) return@collect
                 if (!prefs.wifiOnly && wifiOnlyBlocked) {
                     wifiOnlyBlocked = false
@@ -250,6 +321,14 @@ class RadioService : MediaLibraryService() {
             }
         }
         registerNetworkCallback()
+        carConnection.observeForever(carObserver)
+        getSystemService<AudioManager>()?.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
+        scope.launch {
+            prefsRepo.resumeHeadset.collect { enabled ->
+                headsetResumeEnabled = enabled
+                if (!enabled) cancelHeadsetResume()
+            }
+        }
         updateMediaButtons()
 
         // Persist measured data usage and refresh the session counter every 30 s.
@@ -273,6 +352,8 @@ class RadioService : MediaLibraryService() {
         // The service scope is about to be cancelled; write the remaining bytes on their own.
         flushUsage(CoroutineScope(Dispatchers.IO))
         networkCallback?.let { getSystemService<ConnectivityManager>()?.unregisterNetworkCallback(it) }
+        getSystemService<AudioManager>()?.unregisterAudioDeviceCallback(audioDeviceCallback)
+        carConnection.removeObserver(carObserver)
         audioFx.release()
         scope.cancel()
         session?.release()
@@ -377,6 +458,8 @@ class RadioService : MediaLibraryService() {
             // retryPlayback() replaces the item in place; that is not a station change.
             if (id == currentStationId) return
             currentStationId = id
+            if (id != wakeStationId) clearWakeRamp()
+            cancelHeadsetResume()
             mobileDataOverrideOnce = false
             recordedStationId = null
             pausedAtElapsed = 0L
@@ -386,7 +469,19 @@ class RadioService : MediaLibraryService() {
             sleepTimer.onStationChanged()
             sessionBytes.set(0)
             val stationId = id?.let(MediaIds::stationId)
-            scope.launch { setTrim(stationId?.let { repo.volumeTrim(it) } ?: 0, persist = null) }
+            stationSettingsJob?.cancel()
+            stationEq = null
+            applyAudioPrefs()
+            setTrim(0, persist = null)
+            stationSettingsJob = stationId?.let {
+                scope.launch {
+                    setTrim(repo.volumeTrim(it), persist = null)
+                    prefsRepo.stationEq(it).collect { preset ->
+                        stationEq = preset
+                        applyAudioPrefs()
+                    }
+                }
+            }
             updateMediaButtons()
             updateWidget()
         }
@@ -399,6 +494,16 @@ class RadioService : MediaLibraryService() {
             }
             if (enforceWifiOnly()) return
             wifiOnlyBlocked = false
+            if (wakeStationId != null && wakeStationId == player.currentMediaItem?.mediaId && wakeRamp == null) {
+                wakeRamp = scope.launch {
+                    for (step in 1..40) {
+                        delay(750)
+                        wakeVolume = 0.05f + 0.95f * step / 40
+                        applyVolume()
+                    }
+                    clearWakeRamp()
+                }
+            }
             reconnect.onPlaybackStarted()
             if (player.audioSessionId > 0) {
                 audioFx.bindSession(player.audioSessionId)
@@ -433,7 +538,12 @@ class RadioService : MediaLibraryService() {
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            cancelHeadsetResume()
             if (!playWhenReady) {
+                if (wakeStationId != null) clearWakeRamp()
+                resumeAfterDisconnect = headsetResumeEnabled &&
+                    reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY &&
+                    carConnection.value == CarConnection.CONNECTION_TYPE_NOT_CONNECTED
                 pausedAtElapsed = SystemClock.elapsedRealtime()
                 reconnect.onUserPaused()
                 updateWidget()
@@ -538,7 +648,7 @@ class RadioService : MediaLibraryService() {
     }
 
     private fun applyVolume() {
-        player.volume = (VolumeTrim.attenuationFactor(trimDb) * fadeVolume).coerceIn(0f, 1f)
+        player.volume = (VolumeTrim.attenuationFactor(trimDb) * fadeVolume * wakeVolume).coerceIn(0f, 1f)
     }
 
     /** Applies [db] to the live player; when [persist] is set, also stores it for that station. */
@@ -547,7 +657,10 @@ class RadioService : MediaLibraryService() {
         audioFx.setBoostMillibels(VolumeTrim.boostMillibels(trimDb))
         applyVolume()
         publishExtras()
-        if (persist != null) scope.launch { repo.setVolumeTrim(persist, trimDb) }
+        if (persist != null) {
+            val savedTrim = trimDb
+            scope.launch { repo.setVolumeTrim(persist, savedTrim) }
+        }
     }
 
     /**
@@ -650,9 +763,12 @@ class RadioService : MediaLibraryService() {
                 .add(SessionCommand(SessionKeys.CMD_SLEEP_END_OF_TRACK, Bundle.EMPTY))
                 .add(SessionCommand(SessionKeys.CMD_SET_VOLUME_TRIM, Bundle.EMPTY))
                 .build()
+            val available = if (controller.uid == applicationInfo.uid) {
+                commands.buildUpon().add(SessionCommand(SessionKeys.CMD_PLAY_ROUTINE, Bundle.EMPTY)).build()
+            } else commands
             // Connecting (including from the car) never starts audio.
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
-                .setAvailableSessionCommands(commands)
+                .setAvailableSessionCommands(available)
                 .build()
         }
 
@@ -667,6 +783,30 @@ class RadioService : MediaLibraryService() {
             args: Bundle,
         ): ListenableFuture<SessionResult> {
             when (customCommand.customAction) {
+                SessionKeys.CMD_PLAY_ROUTINE -> {
+                    if (controller.uid != applicationInfo.uid) {
+                        return Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
+                    }
+                    return scope.future {
+                        val id = args.getString(ListeningRoutines.EXTRA_ROUTINE).orEmpty()
+                        val routine = ListeningRoutines(this@RadioService).list().firstOrNull { it.id == id }
+                            ?: return@future SessionResult(SessionError.ERROR_BAD_VALUE)
+                        val station = preferKnownGoodUrl(repo.localStation(routine.station.id) ?: routine.station)
+                        if (player.playWhenReady || carConnection.value != CarConnection.CONNECTION_TYPE_NOT_CONNECTED ||
+                            this@RadioService.session?.connectedControllers.orEmpty().any { it.packageName == "com.google.android.projection.gearhead" }
+                        ) return@future SessionResult(SessionError.ERROR_INVALID_STATE)
+                        clearWakeRamp()
+                        if (routine.wakeUp) {
+                            wakeStationId = MediaIds.station(station.id)
+                            wakeVolume = 0.05f
+                            applyVolume()
+                        }
+                        player.setMediaItem(station.toMediaItem(playable = true))
+                        player.prepare()
+                        player.play()
+                        SessionResult(SessionResult.RESULT_SUCCESS)
+                    }
+                }
                 SessionKeys.CMD_SLEEP -> {
                     val minutes = args.getInt(SessionKeys.ARG_MINUTES, 0)
                     if (minutes > 0) sleepTimer.start(minutes) else sleepTimer.cancel()

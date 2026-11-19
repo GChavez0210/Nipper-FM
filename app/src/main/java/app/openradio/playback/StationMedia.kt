@@ -32,6 +32,7 @@ object MediaIds {
 
 /** Keys for session extras (service -> controllers) and custom commands (controllers -> service). */
 object SessionKeys {
+    const val CMD_PLAY_ROUTINE = "app.openradio.PLAY_ROUTINE"
     const val CMD_SLEEP = "app.openradio.SLEEP_TIMER"
     const val CMD_SLEEP_ADD = "app.openradio.SLEEP_ADD_MINUTES"
     const val CMD_MOBILE_OVERRIDE = "app.openradio.MOBILE_DATA_OVERRIDE"

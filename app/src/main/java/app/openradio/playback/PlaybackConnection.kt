@@ -213,7 +213,7 @@ class PlaybackConnection(private val context: Context) {
     fun livePosition(): LivePosition? {
         val c = controller ?: return null
         val win = liveWindowMs(c)
-        if (!_state.value.seekableLive || win < MIN_LIVE_WINDOW_MS) return null
+        if (!_state.value.seekableLive || win <= 0L) return null
         return LivePosition(c.currentPosition.coerceIn(0, win), win)
     }
 
@@ -251,7 +251,7 @@ class PlaybackConnection(private val context: Context) {
         val win = liveWindowMs(c)
         val seekable = item != null && c.isCurrentMediaItemLive && c.isCurrentMediaItemSeekable &&
             c.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) &&
-            win >= MIN_LIVE_WINDOW_MS
+            win > 0L
 
         val signal = readSignal(c, station)
         val detail = if (status == PlaybackStatus.Unavailable || wifiBlocked) {
@@ -310,7 +310,6 @@ class PlaybackConnection(private val context: Context) {
     }
 
     companion object {
-        const val MIN_LIVE_WINDOW_MS = 30_000L
 
         /**
          * Returns the seekable DVR window behind the live edge ([defaultPositionMs]),

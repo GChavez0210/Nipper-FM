@@ -83,7 +83,7 @@ import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
+fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, onOpenRoutines: () -> Unit) {
     val prefs by vm.appearance.collectAsState()
     val accent = MaterialTheme.colorScheme.primary
     val context = LocalContext.current
@@ -171,6 +171,9 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
         }
 
         PlaybackAudioSettings(vm)
+        OutlinedButton(onClick = onOpenRoutines, modifier = Modifier.padding(horizontal = 16.dp)) {
+            Text("Scheduled listening")
+        }
 
         Section("Theme")
         Row(
@@ -417,6 +420,8 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
 @Composable
 private fun PlaybackAudioSettings(vm: AppViewModel) {
     val prefs by vm.playbackPrefs.collectAsState()
+    val resumePreference = remember(vm) { vm.resumeHeadset }
+    val resumeHeadset by resumePreference.collectAsState(initial = false)
     val exampleUsage = DataUsageEstimator.formatHourly(128)
 
     Section("Playback & Audio")
@@ -429,6 +434,8 @@ private fun PlaybackAudioSettings(vm: AppViewModel) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         PlaybackSwitch("Wi-Fi only", prefs.wifiOnly, vm::setWifiOnly)
+        PlaybackSwitch("Resume when headphones reconnect", resumeHeadset, vm::setResumeHeadset)
+        Text("Resumes after an audio device disconnects.", style = MaterialTheme.typography.bodySmall)
         Text(
             "$exampleUsage at 128 kbps on mobile data.",
             style = MaterialTheme.typography.bodySmall,
