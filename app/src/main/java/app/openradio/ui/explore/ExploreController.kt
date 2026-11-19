@@ -26,6 +26,7 @@ data class ExploreState(
     /** Trending ranking applies whenever there is no active text search. */
     val isTrending: Boolean get() = query.isBlank()
     val isEmpty: Boolean get() = !loading && error == null && items.isEmpty()
+
 }
 
 /**
@@ -67,12 +68,20 @@ class ExploreController(
         job?.cancel()
         moreJob?.cancel()
         val id = ++requestId
-        _state.update { it.copy(loading = true, loadingMore = false, error = null, endReached = false, items = if (delayMs > 0) it.items else emptyList()) }
+        _state.update {
+            it.copy(
+                loading = true,
+                loadingMore = false,
+                error = null,
+                endReached = false,
+                items = if (delayMs > 0) it.items else emptyList(),
+            )
+        }
         job = scope.launch {
             if (delayMs > 0) delay(delayMs)
             val s = _state.value
             try {
-                val result = directory.search(s.query.trim().ifEmpty { null }, s.country?.code, s.tag, 0, pageSize)
+                val result = directory.searchExpanded(s.query.trim().ifEmpty { null }, s.country?.code, s.tag, 0, pageSize)
                 if (id != requestId) return@launch
                 _state.update { it.copy(items = result, loading = false, endReached = result.size < pageSize) }
             } catch (e: CancellationException) {
@@ -92,13 +101,14 @@ class ExploreController(
         _state.update { it.copy(loadingMore = true) }
         moreJob = scope.launch {
             try {
-                val result = directory.search(s.query.trim().ifEmpty { null }, s.country?.code, s.tag, offset, pageSize)
+                val result = directory.searchExpanded(s.query.trim().ifEmpty { null }, s.country?.code, s.tag, offset, pageSize)
                 if (id != requestId) return@launch
                 _state.update {
                     val known = it.items.mapTo(HashSet()) { st -> st.id }
                     it.copy(
                         items = it.items + result.filter { st -> st.id !in known },
-                        loadingMore = false, endReached = result.size < pageSize,
+                        loadingMore = false,
+                        endReached = result.size < pageSize,
                     )
                 }
             } catch (e: CancellationException) {

@@ -23,13 +23,24 @@ object MediaIds {
 /** Keys for session extras (service -> controllers) and custom commands (controllers -> service). */
 object SessionKeys {
     const val CMD_SLEEP = "app.openradio.SLEEP_TIMER"
+    const val CMD_SLEEP_ADD = "app.openradio.SLEEP_ADD_MINUTES"
+    const val CMD_MOBILE_OVERRIDE = "app.openradio.MOBILE_DATA_OVERRIDE"
+    const val CMD_SELECT_FEED = "app.openradio.SELECT_STREAM_FEED"
     const val ARG_MINUTES = "minutes"
+    const val ARG_FEED_URL = "feed_url"
+    const val ARG_FEED_CODEC = "feed_codec"
+    const val ARG_FEED_BITRATE = "feed_bitrate"
+    const val ARG_FEED_HLS = "feed_hls"
 
     const val EXTRA_RECOVERY = "recovery"          // RecoveryPhase name
     const val EXTRA_ATTEMPT = "attempt"
     const val EXTRA_MAX_ATTEMPTS = "max_attempts"
     const val EXTRA_MESSAGE = "message"
     const val EXTRA_SLEEP_ENDS_AT = "sleep_ends_at" // wall-clock millis, 0 = none
+    const val EXTRA_FAILURE_KIND = "failure_kind"   // FailureKind name
+    const val EXTRA_DEVICE_ONLINE = "device_online"
+    const val EXTRA_WIFI_BLOCKED = "wifi_blocked"
+    const val EXTRA_AUDIO_SESSION_ID = "audio_session_id"
 }
 
 private const val X_URL = "x_stream_url"
@@ -40,9 +51,20 @@ private const val X_TAGS = "x_tags"
 private const val X_CODEC = "x_codec"
 private const val X_BITRATE = "x_bitrate"
 private const val X_HLS = "x_hls"
+private const val X_CUSTOM = "x_custom"
+private const val X_LAT = "x_lat"
+private const val X_LON = "x_lon"
 
 /** Builds a media item. [playable] adds the stream URI so a player can load it; browse items omit it. */
 fun Station.toMediaItem(playable: Boolean): MediaItem {
+    val extras = bundleOf(
+        X_URL to streamUrl, X_COUNTRY to country, X_CC to countryCode, X_STATE to state,
+        X_TAGS to tags.joinToString(","), X_CODEC to codec, X_BITRATE to bitrate, X_HLS to isHls,
+        X_CUSTOM to isCustom,
+    ).apply {
+        latitude?.let { putDouble(X_LAT, it) }
+        longitude?.let { putDouble(X_LON, it) }
+    }
     val metadata = MediaMetadata.Builder()
         // Playable items leave title unset so in-stream ICY track titles can populate it;
         // displayTitle and station keep the station name for notifications, car and UI.
@@ -54,12 +76,7 @@ fun Station.toMediaItem(playable: Boolean): MediaItem {
         .setIsPlayable(true)
         .setIsBrowsable(false)
         .setMediaType(MediaMetadata.MEDIA_TYPE_RADIO_STATION)
-        .setExtras(
-            bundleOf(
-                X_URL to streamUrl, X_COUNTRY to country, X_CC to countryCode, X_STATE to state,
-                X_TAGS to tags.joinToString(","), X_CODEC to codec, X_BITRATE to bitrate, X_HLS to isHls,
-            ),
-        )
+        .setExtras(extras)
         .build()
     val builder = MediaItem.Builder().setMediaId(MediaIds.station(id)).setMediaMetadata(metadata)
     if (playable) {
@@ -87,5 +104,8 @@ fun MediaItem.toStation(): Station? {
         codec = x?.getString(X_CODEC),
         bitrate = x?.getInt(X_BITRATE) ?: 0,
         isHls = x?.getBoolean(X_HLS) ?: false,
+        latitude = if (x?.containsKey(X_LAT) == true) x.getDouble(X_LAT) else null,
+        longitude = if (x?.containsKey(X_LON) == true) x.getDouble(X_LON) else null,
+        isCustom = x?.getBoolean(X_CUSTOM) ?: id.startsWith("custom:"),
     )
 }

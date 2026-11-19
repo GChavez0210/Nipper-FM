@@ -1,5 +1,7 @@
 package app.openradio.ui.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -16,32 +18,51 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.openradio.domain.BackupPayload
+import app.openradio.domain.BackupPreviewSummary
+import app.openradio.domain.BufferProfile
+import app.openradio.domain.DataUsageEstimator
 import app.openradio.domain.Station
 import app.openradio.ui.AppViewModel
+import app.openradio.ui.components.NeuDropdownSelector
+import app.openradio.ui.components.NeuMenuOption
 import app.openradio.ui.components.PlayPauseButton
 import app.openradio.ui.components.StationArt
 import app.openradio.ui.components.WaveformArt
@@ -51,12 +72,56 @@ import app.openradio.ui.theme.DarkStyle
 import app.openradio.ui.theme.ThemeMode
 import app.openradio.ui.theme.neuInset
 import app.openradio.ui.theme.neuRaised
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
     val prefs by vm.appearance.collectAsState()
     val accent = MaterialTheme.colorScheme.primary
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pendingRestore by remember { mutableStateOf<Pair<BackupPayload, BackupPreviewSummary>?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val json = vm.buildBackupJson()
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            out.write(json.toByteArray(Charsets.UTF_8))
+                        } ?: error("Cannot open output stream")
+                    }.isSuccess
+                }
+                vm.showMessage(if (ok) "Backup exported." else "Failed to export backup.")
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val raw = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    }.getOrNull()
+                }
+                val parsed = raw?.let(vm::parseBackup)
+                if (parsed != null) {
+                    pendingRestore = parsed
+                } else {
+                    vm.showMessage("Invalid backup file.")
+                }
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Row(
@@ -72,8 +137,10 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
             }
             Spacer(Modifier.width(14.dp))
-            Text("Appearance", style = MaterialTheme.typography.headlineMedium)
+            Text("Settings", style = MaterialTheme.typography.headlineMedium)
         }
+
+        PlaybackAudioSettings(vm)
 
         Section("Theme")
         Row(
@@ -114,12 +181,6 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
                 }
             }
         }
-        Text(
-            "Light mode uses translucent frosted glass over a cool Paper White aurora backdrop.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 18.dp, top = 8.dp),
-        )
 
         Section("Dark surface")
         Column(
@@ -168,16 +229,34 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
         }
 
         Section("Accent color")
-        Row(
+        Column(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
                 .neuRaised(shape = RoundedCornerShape(24.dp), elevation = 5.dp)
-                .padding(horizontal = 10.dp, vertical = 14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 12.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Accent.entries.forEach { item ->
-                Swatch(item, item == prefs.accent) { vm.setAccent(item) }
+            val entries = Accent.entries
+            val firstRow = entries.take(4)
+            val secondRow = entries.drop(4)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                firstRow.forEach { item ->
+                    Swatch(item, item == prefs.accent) { vm.setAccent(item) }
+                }
+            }
+            if (secondRow.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                ) {
+                    secondRow.forEach { item ->
+                        Swatch(item, item == prefs.accent) { vm.setAccent(item) }
+                    }
+                }
             }
         }
 
@@ -206,7 +285,155 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
             Spacer(Modifier.height(14.dp))
             WaveformArt(Modifier.fillMaxWidth())
         }
+
+        Section("Backup & Restore")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .neuRaised(shape = RoundedCornerShape(24.dp), elevation = 5.dp)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "Save or restore favorites, collections, car presets, custom streams, and appearance.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = { exportLauncher.launch("nipperfm-backup.json") },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Filled.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Export")
+                }
+                OutlinedButton(
+                    onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Restore")
+                }
+            }
+        }
+
         Spacer(Modifier.height(32.dp))
+    }
+
+    pendingRestore?.let { (payload, summary) ->
+        RestorePreviewDialog(
+            summary = summary,
+            onMerge = {
+                vm.applyBackup(payload, replace = false)
+                pendingRestore = null
+            },
+            onReplace = {
+                vm.applyBackup(payload, replace = true)
+                pendingRestore = null
+            },
+            onDismiss = { pendingRestore = null },
+        )
+    }
+}
+
+@Composable
+private fun PlaybackAudioSettings(vm: AppViewModel) {
+    val prefs by vm.playbackPrefs.collectAsState()
+    val exampleUsage = DataUsageEstimator.formatHourly(128)
+
+    Section("Playback & Audio")
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .neuRaised(shape = RoundedCornerShape(24.dp), elevation = 5.dp)
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        PlaybackSwitch("Wi-Fi only", prefs.wifiOnly, vm::setWifiOnly)
+        Text(
+            "$exampleUsage at 128 kbps on mobile data.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text("Buffer profile", style = MaterialTheme.typography.titleMedium)
+        NeuDropdownSelector(
+            label = "${prefs.bufferProfile.label} · ${prefs.bufferProfile.subtitle}",
+            active = true,
+            options = BufferProfile.entries.map { NeuMenuOption(it.label, it, it.subtitle) },
+            modifier = Modifier.fillMaxWidth(),
+            fillAnchor = true,
+            onSelect = vm::setBufferProfile,
+        )
+        EqualizerPresetPicker(prefs.eqPreset, vm::setEqPreset)
+        PlaybackSwitch("Spatial audio", prefs.spatialAudio, vm::setSpatialAudio)
+        PlaybackSwitch("Loudness normalization", prefs.loudnessNorm, vm::setLoudnessNorm)
+    }
+}
+
+@Composable
+private fun PlaybackSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+        Switch(checked = checked, onCheckedChange = null)
+    }
+}
+
+@Composable
+private fun RestorePreviewDialog(
+    summary: BackupPreviewSummary,
+    onMerge: () -> Unit,
+    onReplace: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Restore backup preview") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Choose how to restore these items.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                PreviewRow("Favorites", "${summary.favoriteCount}")
+                PreviewRow("Collections", "${summary.groupCount}")
+                PreviewRow("Car Presets", "${summary.presetCount}")
+                PreviewRow("Custom Streams", "${summary.customStreamCount}")
+                PreviewRow("Appearance", summary.appearanceSummary)
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onReplace) { Text("Replace") }
+                FilledTonalButton(onClick = onMerge) { Text("Merge") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+@Composable
+private fun PreviewRow(label: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -221,13 +448,18 @@ private fun Section(title: String) {
 
 @Composable
 private fun Swatch(accent: Accent, selected: Boolean, onClick: () -> Unit) {
-    val swatchArgb = if (MaterialTheme.colorScheme.background.luminanceIsDark()) accent.dark else accent.light
+    val isDark = MaterialTheme.colorScheme.background.luminanceIsDark()
+    // For Graphite in Light mode, display the warm off-white swatch inside a crisp dark-slate ring
+    // so the swatch looks off-white while remaining clearly visible on Paper White.
+    val isLightGraphite = !isDark && accent == Accent.OffWhite
+    val swatchArgb = if (isDark || isLightGraphite) accent.dark else accent.light
     val fill = Color(swatchArgb)
+    val checkColor = if (isLightGraphite) Color(accent.light) else Color(ColorMath.onColor(swatchArgb))
     Column(
         Modifier
             .clip(RoundedCornerShape(16.dp))
             .selectable(selected, role = Role.RadioButton, onClick = onClick)
-            .padding(4.dp)
+            .padding(horizontal = 6.dp, vertical = 4.dp)
             .semantics { contentDescription = accent.label + if (selected) ", selected" else "" },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -244,14 +476,19 @@ private fun Swatch(accent: Accent, selected: Boolean, onClick: () -> Unit) {
                     },
                 )
                 .clip(CircleShape)
-                .background(fill),
+                .background(fill)
+                .border(
+                    width = if (isLightGraphite) 2.dp else 1.dp,
+                    color = if (isLightGraphite) Color(accent.light) else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                    shape = CircleShape,
+                ),
             contentAlignment = Alignment.Center,
         ) {
             if (selected) {
                 Icon(
                     Icons.Filled.Check,
                     contentDescription = null,
-                    tint = Color(ColorMath.onColor(swatchArgb)),
+                    tint = checkColor,
                 )
             }
         }

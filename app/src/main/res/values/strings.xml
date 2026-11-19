@@ -1,3 +1,8 @@
 <resources>
-    <string name="app_name">Open Radio</string>
+    <string name="app_name">Nipper FM</string>
+    <string name="shortcut_last_station_short">Last Station</string>
+    <string name="shortcut_last_station_long">Open last station ready to start</string>
+    <string name="widget_description">Current station, playback controls, and quick access to pinned presets</string>
+    <string name="widget_subtitle_default">Tap to tune in</string>
+    <string name="widget_play_pause_desc">Play or pause radio</string>
 </resources>

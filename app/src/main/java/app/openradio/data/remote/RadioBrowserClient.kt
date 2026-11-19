@@ -1,8 +1,8 @@
 package app.openradio.data.remote
 
 import app.openradio.domain.Country
+import app.openradio.domain.ExpandedSearch
 import app.openradio.domain.Station
-import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -13,6 +13,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import retrofit2.HttpException
 import retrofit2.Retrofit
+import retrofit2.converter.kotlinx.serialization.asConverterFactory
 
 /** The seam used by ViewModels and the service; faked in tests. */
 interface StationDirectory {
@@ -23,6 +24,20 @@ interface StationDirectory {
         offset: Int,
         limit: Int,
     ): List<Station>
+
+    /**
+     * Expanded search across station name, city/state, callsign, and frequency tags.
+     * Defaults to [search] so simple test fakes require no boilerplate.
+     */
+    suspend fun searchExpanded(
+        query: String?,
+        countryCode: String?,
+        tag: String?,
+        offset: Int,
+        limit: Int,
+    ): List<Station> = search(query, countryCode, tag, offset, limit)
+
+    suspend fun popularCountryCodes(): List<String> = emptyList()
 
     suspend fun byUuid(uuid: String): Station?
     suspend fun countries(): List<Country>
@@ -115,6 +130,62 @@ class RadioBrowserClient(
             )
         }.mapNotNull { it.toStation() }
 
+    override suspend fun searchExpanded(
+        query: String?,
+        countryCode: String?,
+        tag: String?,
+        offset: Int,
+        limit: Int,
+    ): List<Station> {
+        val clean = query?.trim()?.takeIf { it.isNotBlank() }
+        val primary = search(clean, countryCode, tag, offset, limit)
+        if (clean == null || offset > 0 || primary.size >= limit) return primary
+
+        // Supplement first-page results with city/state and tag matches when name matches are sparse
+        val byCity = if (!ExpandedSearch.isFrequencyQuery(clean)) {
+            runCatching {
+                withFailover {
+                    it.searchStations(
+                        state = clean,
+                        countryCode = countryCode,
+                        tag = tag,
+                        tagExact = if (tag != null) true else null,
+                        offset = 0,
+                        limit = limit / 2,
+                    )
+                }.mapNotNull { dto -> dto.toStation() }
+            }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+
+        val byTag = if (tag == null) {
+            runCatching {
+                withFailover {
+                    it.searchStations(
+                        tag = clean.lowercase(),
+                        countryCode = countryCode,
+                        offset = 0,
+                        limit = limit / 2,
+                    )
+                }.mapNotNull { dto -> dto.toStation() }
+            }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+
+        return ExpandedSearch.mergeAndRank(clean, primary, byCity, byTag).take(limit)
+    }
+
+    override suspend fun popularCountryCodes(): List<String> =
+        withFailover { it.searchStations(order = "clickcount", limit = 250) }
+            .filter { it.countrycode.isNotBlank() && it.clickcount > 0 }
+            .groupingBy { it.countrycode.uppercase() }
+            .fold(0L) { total, station -> total + station.clickcount }
+            .entries.sortedWith(compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key })
+            .take(8)
+            .map { it.key }
+
     override suspend fun byUuid(uuid: String): Station? =
         withFailover { it.stationByUuid(uuid) }.firstNotNullOfOrNull { it.toStation() }
 
@@ -130,7 +201,7 @@ class RadioBrowserClient(
 
     companion object {
         const val DISCOVERY_URL = "https://all.api.radio-browser.info/json/servers"
-        const val USER_AGENT = "OpenRadio/0.1 (Android)"
+        const val USER_AGENT = "NipperFM/0.1 (Android)"
         val FALLBACK_HOSTS = listOf(
             "de1.api.radio-browser.info",
             "de2.api.radio-browser.info",

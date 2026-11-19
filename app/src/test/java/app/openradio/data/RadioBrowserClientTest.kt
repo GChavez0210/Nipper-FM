@@ -94,6 +94,21 @@ class RadioBrowserClientTest {
         assertEquals(1, b.requestCount)
     }
 
+    @Test fun ranksCountriesByCombinedStationClicks() = runBlocking {
+        a.enqueue(MockResponse().setResponseCode(404))
+        a.enqueue(MockResponse().setBody(
+            """[{"stationuuid":"1","countrycode":"FR","clickcount":10},{"stationuuid":"2","countrycode":"US","clickcount":8},
+                {"stationuuid":"3","countrycode":"us","clickcount":5},{"stationuuid":"4","countrycode":"","clickcount":90},
+                {"stationuuid":"5","countrycode":"DE","clickcount":0}]""",
+        ))
+
+        assertEquals(listOf("US", "FR"), client(listOf(host(a))).popularCountryCodes())
+        a.takeRequest()
+        val request = a.takeRequest().requestUrl!!
+        assertEquals("clickcount", request.queryParameter("order"))
+        assertEquals("true", request.queryParameter("reverse"))
+    }
+
     @Test fun lookupByUuid() = runBlocking {
         a.enqueue(MockResponse().setResponseCode(404))
         a.enqueue(MockResponse().setBody(oneStation))

@@ -52,5 +52,10 @@ class ThemeContrastTest {
         assertFalse(buildNeumorphicStyle(dark = false, style = DarkStyle.Obsidian).isFlatHighContrast)
         assertFalse(buildNeumorphicStyle(dark = true, style = DarkStyle.Obsidian).isFlatHighContrast)
         assertTrue(buildNeumorphicStyle(dark = true, style = DarkStyle.TrueBlack).isFlatHighContrast)
+
+        // Verify Graphite accent specifically is high-contrast on both dark and light PaperWhite themes.
+        assertTrue(ColorMath.contrast(Accent.OffWhite.dark, Surfaces.Obsidian.containerHigh) >= 7.0)
+        assertTrue(ColorMath.contrast(Accent.OffWhite.light, Surfaces.PaperWhite.surface) >= 7.0)
+        assertTrue(ColorMath.contrast(Accent.OffWhite.light, Surfaces.PaperWhite.containerHigh) >= 7.0)
     }
 }

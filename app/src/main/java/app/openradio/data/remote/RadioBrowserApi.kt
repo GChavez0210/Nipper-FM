@@ -23,6 +23,9 @@ data class StationDto(
     val bitrate: Int = 0,
     val hls: Int = 0,
     val clicktrend: Int = 0,
+    val clickcount: Int = 0,
+    @SerialName("geo_lat") val geoLat: Double? = null,
+    @SerialName("geo_long") val geoLong: Double? = null,
 ) {
     fun toStation(): Station? {
         val playable = urlResolved.ifBlank { url }
@@ -39,6 +42,8 @@ data class StationDto(
             codec = codec.takeIf { it.isNotBlank() },
             bitrate = bitrate,
             isHls = hls == 1,
+            latitude = geoLat,
+            longitude = geoLong,
         )
     }
 }
@@ -61,6 +66,7 @@ interface RadioBrowserApi {
     suspend fun searchStations(
         @Query("name") name: String? = null,
         @Query("countrycode") countryCode: String? = null,
+        @Query("state") state: String? = null,
         @Query("tag") tag: String? = null,
         @Query("tagExact") tagExact: Boolean? = null,
         @Query("order") order: String = "clicktrend",

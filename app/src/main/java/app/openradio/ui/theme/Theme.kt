@@ -1,13 +1,8 @@
 package app.openradio.ui.theme
 
-import android.graphics.BlurMaskFilter
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
@@ -21,17 +16,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -52,12 +37,21 @@ data class NeumorphicStyle(
     val insetBottomRight: Color,
     val bevelLight: Color,
     val bevelDark: Color,
-    val specularMid: Color = Color.Transparent,
-    val sheenTop: Color = Color.Transparent,
 )
 
 val LocalNeumorphicStyle = staticCompositionLocalOf {
-    buildNeumorphicStyle(dark = true, style = DarkStyle.Obsidian)
+    NeumorphicStyle(
+        isDark = true,
+        isFlatHighContrast = false,
+        lightShadow = Color(0xFF2D313D),
+        darkShadow = Color(0xFF0B0C0F),
+        raisedTopLeft = Color(0xFF252831),
+        raisedBottomRight = Color(0xFF1C1E25),
+        insetTopLeft = Color(0xFF131419),
+        insetBottomRight = Color(0xFF22252E),
+        bevelLight = Color(0xFF363B48),
+        bevelDark = Color(0xFF121318),
+    )
 }
 
 fun buildNeumorphicStyle(dark: Boolean, style: DarkStyle): NeumorphicStyle = when {
@@ -65,15 +59,13 @@ fun buildNeumorphicStyle(dark: Boolean, style: DarkStyle): NeumorphicStyle = whe
         isDark = false,
         isFlatHighContrast = false,
         lightShadow = Color(0xFFFFFFFF),
-        darkShadow = Color(0x387A90B0),
-        raisedTopLeft = Color(0xD9FFFFFF),
-        raisedBottomRight = Color(0x8CFFFFFF),
-        insetTopLeft = Color(0x78D9E4F2),
-        insetBottomRight = Color(0xB8F5F9FF),
-        bevelLight = Color(0xF2FFFFFF),
-        bevelDark = Color(0x66FFFFFF),
-        specularMid = Color(0x33B8CAE0),
-        sheenTop = Color(0x55FFFFFF),
+        darkShadow = Color(0xFFC9D4E4),
+        raisedTopLeft = Color(0xFFFAFBFD),
+        raisedBottomRight = Color(0xFFEEF2F8),
+        insetTopLeft = Color(0xFFE1E8F2),
+        insetBottomRight = Color(0xFFF9FBFE),
+        bevelLight = Color(0xFFFFFFFF),
+        bevelDark = Color(0xFFD2DCEB),
     )
     style == DarkStyle.TrueBlack -> NeumorphicStyle(
         isDark = true,
@@ -86,22 +78,18 @@ fun buildNeumorphicStyle(dark: Boolean, style: DarkStyle): NeumorphicStyle = whe
         insetBottomRight = Color(0xFF060709),
         bevelLight = Color(0xFF3A3F4B),
         bevelDark = Color(0xFF3A3F4B),
-        specularMid = Color(0xFF3A3F4B),
-        sheenTop = Color.Transparent,
     )
     else -> NeumorphicStyle(
         isDark = true,
         isFlatHighContrast = false,
-        lightShadow = Color(0x33FFFFFF),
-        darkShadow = Color(0xAA04060C),
-        raisedTopLeft = Color(0x88262B3A),
-        raisedBottomRight = Color(0x52171A24),
-        insetTopLeft = Color(0x990A0C12),
-        insetBottomRight = Color(0x66161924),
-        bevelLight = Color(0x6BFFFFFF),
-        bevelDark = Color(0x26FFFFFF),
-        specularMid = Color(0x0DFFFFFF),
-        sheenTop = Color(0x22FFFFFF),
+        lightShadow = Color(0xFF2C303C),
+        darkShadow = Color(0xFF0B0C10),
+        raisedTopLeft = Color(0xFF252832),
+        raisedBottomRight = Color(0xFF1C1E25),
+        insetTopLeft = Color(0xFF121318),
+        insetBottomRight = Color(0xFF21242C),
+        bevelLight = Color(0xFF353A47),
+        bevelDark = Color(0xFF121317),
     )
 }
 
@@ -134,81 +122,7 @@ fun buildColorScheme(accent: Accent, dark: Boolean, style: DarkStyle): ColorSche
 }
 
 /**
- * Ambient multi-orb aurora backdrop that gives translucent glassmorphism panels
- * color, light refraction, and depth behind them. Disabled in High-Contrast Flat mode.
- */
-@Composable
-fun GlassBackdrop(
-    modifier: Modifier = Modifier,
-    content: @Composable BoxScope.() -> Unit,
-) {
-    val neu = LocalNeumorphicStyle.current
-    val bg = MaterialTheme.colorScheme.background
-    val accent = MaterialTheme.colorScheme.primary
-    Box(modifier = modifier.fillMaxSize().background(bg)) {
-        if (!neu.isFlatHighContrast) {
-            val secondaryOrb = if (neu.isDark) Color(0xFF29B6F6) else Color(0xFF5C9DFF)
-            val tertiaryOrb = if (neu.isDark) Color(0xFFEC407A) else Color(0xFFFF8A65)
-            Canvas(Modifier.fillMaxSize()) {
-                val w = size.width
-                val h = size.height
-                val r1 = maxOf(w, h) * 0.55f
-                val r2 = maxOf(w, h) * 0.48f
-                val r3 = maxOf(w, h) * 0.52f
-
-                // Top-left primary accent aurora orb
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            accent.copy(alpha = if (neu.isDark) 0.30f else 0.20f),
-                            accent.copy(alpha = if (neu.isDark) 0.10f else 0.06f),
-                            Color.Transparent,
-                        ),
-                        center = Offset(w * 0.15f, h * 0.12f),
-                        radius = r1,
-                    ),
-                    radius = r1,
-                    center = Offset(w * 0.15f, h * 0.12f),
-                )
-
-                // Mid-right cool cyan/blue refraction orb
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            secondaryOrb.copy(alpha = if (neu.isDark) 0.20f else 0.15f),
-                            secondaryOrb.copy(alpha = if (neu.isDark) 0.06f else 0.04f),
-                            Color.Transparent,
-                        ),
-                        center = Offset(w * 0.88f, h * 0.44f),
-                        radius = r2,
-                    ),
-                    radius = r2,
-                    center = Offset(w * 0.88f, h * 0.44f),
-                )
-
-                // Bottom-left accent + warm orb behind floating MiniPlayer & nav dock
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            accent.copy(alpha = if (neu.isDark) 0.25f else 0.17f),
-                            tertiaryOrb.copy(alpha = if (neu.isDark) 0.10f else 0.07f),
-                            Color.Transparent,
-                        ),
-                        center = Offset(w * 0.28f, h * 0.88f),
-                        radius = r3,
-                    ),
-                    radius = r3,
-                    center = Offset(w * 0.28f, h * 0.88f),
-                )
-            }
-        }
-        content()
-    }
-}
-
-/**
- * Translucent frosted-glass panel with soft downward drop shadow, top-left specular rim reflection,
- * and internal glass sheen (or crisp flat surface in High-Contrast Flat mode).
+ * Tactile raised soft-neumorphic surface (or crisp flat surface in High-Contrast Flat mode).
  */
 @Composable
 fun Modifier.neuRaised(
@@ -217,193 +131,31 @@ fun Modifier.neuRaised(
     accentGlow: Color? = null,
     borderWidth: Dp = 1.dp,
 ): Modifier {
-    val neu = LocalNeumorphicStyle.current
-    val density = LocalDensity.current
-    val cornerPx = with(density) {
-        shape.topStart.toPx(Size(200f, 200f), density)
+    val style = LocalNeumorphicStyle.current
+    val color = if (elevation >= 4.dp) style.raisedTopLeft else style.raisedBottomRight
+    val surface = clip(shape).background(color, shape)
+    return when {
+        style.isFlatHighContrast -> surface.border(borderWidth, accentGlow ?: style.bevelLight, shape)
+        accentGlow != null -> surface.border(borderWidth, accentGlow.copy(alpha = 0.35f), shape)
+        else -> surface
     }
-    if (neu.isFlatHighContrast) {
-        val borderColor = accentGlow ?: neu.bevelLight
-        return this
-            .clip(shape)
-            .background(neu.raisedTopLeft, shape)
-            .border(borderWidth, borderColor, shape)
-    }
-    val offsetPx = with(density) { elevation.toPx() }
-    val blurPx = (offsetPx * 2.2f).coerceAtLeast(1f)
-
-    // Translucent frosted glass fill, tinted with accentGlow when active/selected
-    val glassTopLeft = if (accentGlow != null) {
-        accentGlow.copy(alpha = if (neu.isDark) 0.26f else 0.22f)
-    } else {
-        neu.raisedTopLeft
-    }
-    val glassBottomRight = if (accentGlow != null) {
-        accentGlow.copy(alpha = if (neu.isDark) 0.10f else 0.10f)
-    } else {
-        neu.raisedBottomRight
-    }
-
-    // Specular rim: bright top-left highlight -> subtle mid -> faint bottom-right rim reflection
-    val rimTopLeft = accentGlow?.copy(alpha = 0.90f) ?: neu.bevelLight
-    val rimMid = accentGlow?.copy(alpha = 0.22f) ?: neu.specularMid
-    val rimBottomRight = accentGlow?.copy(alpha = 0.50f) ?: neu.bevelDark
-
-    return this
-        .drawBehind {
-            drawIntoCanvas { canvas ->
-                val native = canvas.nativeCanvas
-                val shadowColor = if (accentGlow != null) {
-                    accentGlow.copy(alpha = if (neu.isDark) 0.35f else 0.25f)
-                } else {
-                    neu.darkShadow
-                }
-                val shadowPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                    color = shadowColor.toArgb()
-                    maskFilter = BlurMaskFilter(blurPx, BlurMaskFilter.Blur.NORMAL)
-                }
-                val r = cornerPx.coerceAtMost(size.minDimension / 2f)
-                native.drawRoundRect(
-                    offsetPx * 0.15f,
-                    offsetPx * 0.55f,
-                    size.width + offsetPx * 0.35f,
-                    size.height + offsetPx * 0.95f,
-                    r, r, shadowPaint,
-                )
-            }
-        }
-        .clip(shape)
-        .then(
-            if (accentGlow != null) {
-                // Base frosted layer under the accent glass tint so text stays high-contrast
-                Modifier.background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(neu.raisedTopLeft, neu.raisedBottomRight),
-                        start = Offset.Zero,
-                        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-                    ),
-                    shape = shape,
-                )
-            } else {
-                Modifier
-            },
-        )
-        .background(
-            brush = Brush.linearGradient(
-                colors = listOf(glassTopLeft, glassBottomRight),
-                start = Offset.Zero,
-                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-            ),
-            shape = shape,
-        )
-        .drawWithContent {
-            // Subtle top-left diagonal glass refraction sheen
-            val r = cornerPx.coerceAtMost(size.minDimension / 2f)
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(neu.sheenTop, Color.Transparent),
-                    start = Offset.Zero,
-                    end = Offset(size.width * 0.55f, size.height * 0.65f),
-                ),
-                topLeft = Offset.Zero,
-                size = size,
-                cornerRadius = CornerRadius(r, r),
-            )
-            drawContent()
-        }
-        .border(
-            width = borderWidth,
-            brush = Brush.linearGradient(
-                colors = listOf(rimTopLeft, rimMid, rimBottomRight),
-                start = Offset.Zero,
-                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-            ),
-            shape = shape,
-        )
 }
 
-/**
- * Etched / recessed translucent glass well for search inputs, active filter capsules, and tracks.
- */
+/** Low-emphasis surface for text inputs, selection, and grouped controls. */
 @Composable
 fun Modifier.neuInset(
     shape: CornerBasedShape = RoundedCornerShape(24.dp),
     depth: Dp = 4.dp,
     accentBorder: Color? = null,
 ): Modifier {
-    val neu = LocalNeumorphicStyle.current
-    val density = LocalDensity.current
-    val cornerPx = with(density) {
-        shape.topStart.toPx(Size(200f, 200f), density)
+    val style = LocalNeumorphicStyle.current
+    val color = if (depth >= 4.dp) style.insetTopLeft else style.insetBottomRight
+    val surface = clip(shape).background(color, shape)
+    return when {
+        style.isFlatHighContrast -> surface.border(1.dp, accentBorder ?: style.bevelLight, shape)
+        accentBorder != null -> surface.border(1.dp, accentBorder.copy(alpha = 0.45f), shape)
+        else -> surface
     }
-    if (neu.isFlatHighContrast) {
-        return this
-            .clip(shape)
-            .background(neu.insetTopLeft, shape)
-            .border(1.dp, accentBorder ?: neu.bevelLight, shape)
-    }
-    val topFill = if (accentBorder != null) {
-        accentBorder.copy(alpha = if (neu.isDark) 0.22f else 0.16f)
-    } else {
-        neu.insetTopLeft
-    }
-    val bottomFill = if (accentBorder != null) {
-        accentBorder.copy(alpha = if (neu.isDark) 0.10f else 0.08f)
-    } else {
-        neu.insetBottomRight
-    }
-    val topRim = accentBorder?.copy(alpha = 0.70f) ?: neu.bevelDark
-    val bottomRim = accentBorder?.copy(alpha = 0.90f) ?: neu.bevelLight
-    return this
-        .clip(shape)
-        .background(
-            brush = Brush.linearGradient(
-                colors = listOf(neu.insetTopLeft, neu.insetBottomRight),
-                start = Offset.Zero,
-                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-            ),
-            shape = shape,
-        )
-        .then(
-            if (accentBorder != null) {
-                Modifier.background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(topFill, bottomFill),
-                        start = Offset.Zero,
-                        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-                    ),
-                    shape = shape,
-                )
-            } else {
-                Modifier
-            },
-        )
-        .drawWithContent {
-            drawContent()
-            val r = cornerPx.coerceAtMost(size.minDimension / 2f)
-            // Subtle top inner shadow & bottom specular highlight inside the etched well
-            drawRoundRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.Black.copy(alpha = if (neu.isDark) 0.24f else 0.07f),
-                        Color.Transparent,
-                        Color.White.copy(alpha = if (neu.isDark) 0.07f else 0.35f),
-                    ),
-                ),
-                topLeft = Offset.Zero,
-                size = size,
-                cornerRadius = CornerRadius(r, r),
-            )
-        }
-        .border(
-            width = if (accentBorder != null) 1.2.dp else 1.dp,
-            brush = Brush.linearGradient(
-                colors = listOf(topRim, neu.specularMid, bottomRim),
-                start = Offset.Zero,
-                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
-            ),
-            shape = shape,
-        )
 }
 
 private val base = Typography()
@@ -415,7 +167,7 @@ private val AppTypography = base.copy(
 )
 
 @Composable
-fun OpenRadioTheme(prefs: AppearancePrefs, content: @Composable () -> Unit) {
+fun NipperFmTheme(prefs: AppearancePrefs, content: @Composable () -> Unit) {
     val dark = when (prefs.themeMode) {
         ThemeMode.System -> isSystemInDarkTheme()
         ThemeMode.Dark -> true

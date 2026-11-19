@@ -62,7 +62,8 @@ class ReconnectController(
     private var job: Job? = null
     private var generation = 0
     private var activeStationId: String? = null
-    private var lastKind: FailureKind? = null
+    var lastKind: FailureKind? = null
+        private set
     private var currentUrl: String? = null
     private var failureSignal = Channel<FailureKind>(Channel.CONFLATED)
 

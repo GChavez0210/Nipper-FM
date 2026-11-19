@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.Icon
@@ -26,13 +27,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -53,8 +54,10 @@ import app.openradio.ui.explore.ExploreScreen
 import app.openradio.ui.favorites.FavoritesScreen
 import app.openradio.ui.nowplaying.NowPlayingScreen
 import app.openradio.ui.settings.SettingsScreen
+import androidx.compose.material3.Surface
 import app.openradio.ui.theme.neuInset
 import app.openradio.ui.theme.neuRaised
+import kotlinx.coroutines.delay
 
 private object Routes {
     const val HOME = "home"
@@ -65,6 +68,16 @@ private object Routes {
 @Composable
 fun AppRoot(vm: AppViewModel) {
     val nav = rememberNavController()
+    val pendingLastStation by vm.pendingOpenLastStation.collectAsState()
+    LaunchedEffect(pendingLastStation) {
+        if (pendingLastStation) {
+            vm.consumeOpenLastStationShortcut {
+                nav.navigate(Routes.NOW_PLAYING) {
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
     Surface(Modifier.fillMaxSize().systemBarsPadding(), color = MaterialTheme.colorScheme.background) {
         NavHost(
             navController = nav, startDestination = Routes.HOME,
@@ -135,8 +148,22 @@ private fun HomeScreen(vm: AppViewModel, onOpenNowPlaying: () -> Unit, onOpenSet
         },
     ) { padding ->
         val currentId = ui.station?.id
-        if (tab == 0) ExploreScreen(vm, currentId, onOpenSettings, Modifier.padding(padding))
-        else FavoritesScreen(vm, currentId, Modifier.padding(padding))
+        if (tab == 0) {
+            ExploreScreen(
+                vm = vm,
+                currentStationId = currentId,
+                onOpenSettings = onOpenSettings,
+                onOpenNowPlaying = onOpenNowPlaying,
+                modifier = Modifier.padding(padding),
+            )
+        } else {
+            FavoritesScreen(
+                vm = vm,
+                currentStationId = currentId,
+                onOpenNowPlaying = onOpenNowPlaying,
+                modifier = Modifier.padding(padding),
+            )
+        }
     }
 }
 
@@ -180,7 +207,17 @@ private fun NeuNavTab(
 private fun MiniPlayer(vm: AppViewModel, onClick: () -> Unit) {
     val ui by vm.playback.state.collectAsState()
     val station = ui.station ?: return
-    val statusText = when (ui.status) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(ui.sleepEndsAtMs) {
+        while (ui.sleepEndsAtMs > 0) { now = System.currentTimeMillis(); delay(1_000) }
+    }
+    val sleepText = if (ui.sleepEndsAtMs > 0) {
+        val total = ((ui.sleepEndsAtMs - now).coerceAtLeast(0) / 1000).toInt()
+        "Sleep %d:%02d".format(total / 60, total % 60)
+    } else {
+        null
+    }
+    val statusText = if (ui.wifiOnlyBlocked) "Wi-Fi only" else when (ui.status) {
         PlaybackStatus.Live -> "Live"
         PlaybackStatus.Buffering -> "Buffering"
         PlaybackStatus.Reconnecting -> "Reconnecting"
@@ -194,9 +231,7 @@ private fun MiniPlayer(vm: AppViewModel, onClick: () -> Unit) {
             .fillMaxWidth()
             .neuRaised(
                 shape = RoundedCornerShape(22.dp),
-                elevation = 6.dp,
-                accentGlow = accent,
-                borderWidth = 1.2.dp,
+                elevation = 2.dp,
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -207,7 +242,22 @@ private fun MiniPlayer(vm: AppViewModel, onClick: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Text(station.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val sub = listOfNotNull(station.state ?: station.country, statusText.takeIf { it.isNotEmpty() }).joinToString(" • ")
-            Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    sub,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (sleepText != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Outlined.Bedtime, contentDescription = null, tint = accent, modifier = Modifier.size(12.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text(sleepText, style = MaterialTheme.typography.labelSmall, color = accent, maxLines = 1)
+                }
+            }
         }
         PlayPauseButton(
             isPlaying = ui.status == PlaybackStatus.Live || ui.status == PlaybackStatus.Buffering || ui.status == PlaybackStatus.Reconnecting,
