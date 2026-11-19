@@ -83,7 +83,7 @@ import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, onOpenRoutines: () -> Unit) {
+fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, onOpenAbout: () -> Unit) {
     val prefs by vm.appearance.collectAsState()
     val accent = MaterialTheme.colorScheme.primary
     val context = LocalContext.current
@@ -171,9 +171,13 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, onOpenRoutines: () -> U
         }
 
         PlaybackAudioSettings(vm)
-        OutlinedButton(onClick = onOpenRoutines, modifier = Modifier.padding(horizontal = 16.dp)) {
-            Text("Scheduled listening")
-        }
+        Section("Scheduled listening")
+        ListeningRoutinesSettings(
+            Modifier.fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .neuRaised(shape = RoundedCornerShape(24.dp), elevation = 5.dp)
+                .padding(18.dp),
+        )
 
         Section("Theme")
         Row(
@@ -398,6 +402,13 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, onOpenRoutines: () -> U
             }
         }
 
+        Section("About")
+        OutlinedButton(
+            onClick = onOpenAbout,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        ) {
+            Text("About Nipper FM")
+        }
         Spacer(Modifier.height(32.dp))
     }
 
@@ -422,7 +433,6 @@ private fun PlaybackAudioSettings(vm: AppViewModel) {
     val prefs by vm.playbackPrefs.collectAsState()
     val resumePreference = remember(vm) { vm.resumeHeadset }
     val resumeHeadset by resumePreference.collectAsState(initial = false)
-    val exampleUsage = DataUsageEstimator.formatHourly(128)
 
     Section("Playback & Audio")
     Column(
@@ -436,11 +446,6 @@ private fun PlaybackAudioSettings(vm: AppViewModel) {
         PlaybackSwitch("Wi-Fi only", prefs.wifiOnly, vm::setWifiOnly)
         PlaybackSwitch("Resume when headphones reconnect", resumeHeadset, vm::setResumeHeadset)
         Text("Resumes after an audio device disconnects.", style = MaterialTheme.typography.bodySmall)
-        Text(
-            "$exampleUsage at 128 kbps on mobile data.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         DataUsageSummary(vm)
         Text("Buffer profile", style = MaterialTheme.typography.titleMedium)
         NeuDropdownSelector(
@@ -466,6 +471,11 @@ private fun DataUsageSummary(vm: AppViewModel) {
     val last = months.firstOrNull { it.month == DataUsageMath.previousMonth(thisKey) }
     Text("Data streamed", style = MaterialTheme.typography.titleMedium)
     UsageLine("This month", current)
+    Text(
+        "${DataUsageEstimator.formatHourly(128)} at 128 kbps on mobile data.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
     if (last != null) UsageLine("Last month", last)
     if (months.isNotEmpty()) {
         TextButton(onClick = vm::resetDataUsage, contentPadding = PaddingValues(0.dp)) { Text("Reset counters") }

@@ -57,8 +57,9 @@ import app.openradio.ui.components.StationArt
 import app.openradio.ui.explore.ExploreScreen
 import app.openradio.ui.favorites.FavoritesScreen
 import app.openradio.ui.nowplaying.NowPlayingScreen
+import app.openradio.ui.settings.AboutScreen
 import app.openradio.ui.settings.SettingsScreen
-import app.openradio.ui.settings.ListeningRoutinesScreen
+import app.openradio.ui.nowplaying.SleepTimerScreen
 import androidx.compose.material3.Surface
 import app.openradio.ui.theme.neuInset
 import app.openradio.ui.theme.neuRaised
@@ -68,7 +69,8 @@ private object Routes {
     const val HOME = "home"
     const val NOW_PLAYING = "now_playing"
     const val SETTINGS = "settings"
-    const val LISTENING_ROUTINES = "listening_routines"
+    const val ABOUT = "about"
+    const val SLEEP_TIMER = "sleep_timer"
 }
 
 @Composable
@@ -82,6 +84,13 @@ fun AppRoot(vm: AppViewModel) {
                     launchSingleTop = true
                 }
             }
+        }
+    }
+    val openSleepTimer by vm.pendingOpenSleepTimer.collectAsState()
+    LaunchedEffect(openSleepTimer) {
+        if (openSleepTimer) {
+            nav.navigate(Routes.SLEEP_TIMER) { launchSingleTop = true }
+            vm.sleepTimerOpened()
         }
     }
     Surface(Modifier.fillMaxSize().systemBarsPadding(), color = MaterialTheme.colorScheme.background) {
@@ -100,9 +109,14 @@ fun AppRoot(vm: AppViewModel) {
                 popExitTransition = { slideOutVertically { it } },
             ) { NowPlayingScreen(vm, onClose = { nav.popBackStack() }) }
             composable(Routes.SETTINGS) {
-                SettingsScreen(vm, onBack = { nav.popBackStack() }, onOpenRoutines = { nav.navigate(Routes.LISTENING_ROUTINES) })
+                SettingsScreen(
+                    vm,
+                    onBack = { nav.popBackStack() },
+                    onOpenAbout = { nav.navigate(Routes.ABOUT) { launchSingleTop = true } },
+                )
             }
-            composable(Routes.LISTENING_ROUTINES) { ListeningRoutinesScreen(onBack = { nav.popBackStack() }) }
+            composable(Routes.ABOUT) { AboutScreen(onBack = { nav.popBackStack() }) }
+            composable(Routes.SLEEP_TIMER) { SleepTimerScreen(vm, onBack = { nav.popBackStack() }) }
         }
     }
 }

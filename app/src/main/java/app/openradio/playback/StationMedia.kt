@@ -39,8 +39,7 @@ object SessionKeys {
     const val CMD_SELECT_FEED = "app.openradio.SELECT_STREAM_FEED"
     /** Toggles favorite for the current station (notification, lock screen, Android Auto). */
     const val CMD_TOGGLE_FAVORITE = "app.openradio.TOGGLE_FAVORITE"
-    /** Steps the sleep timer Off → 15 → 30 → 60 → Off (notification, lock screen, Android Auto). */
-    const val CMD_SLEEP_CYCLE = "app.openradio.SLEEP_CYCLE"
+    const val CMD_OPEN_SLEEP_TIMER = "app.openradio.OPEN_SLEEP_TIMER"
     const val CMD_SLEEP_END_OF_TRACK = "app.openradio.SLEEP_END_OF_TRACK"
     const val CMD_SET_VOLUME_TRIM = "app.openradio.SET_VOLUME_TRIM"
     const val ARG_TRIM_DB = "trim_db"
