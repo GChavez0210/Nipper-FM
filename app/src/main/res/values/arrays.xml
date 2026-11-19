@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Phrases Assistant matches to the "play last station" feature. -->
+    <string-array name="last_station_synonyms">
+        <item>last station</item>
+        <item>my last station</item>
+        <item>my radio</item>
+        <item>the radio</item>
+    </string-array>
+</resources>

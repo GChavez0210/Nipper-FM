@@ -61,6 +61,9 @@ import app.openradio.domain.BackupPayload
 import app.openradio.domain.BackupPreviewSummary
 import app.openradio.domain.BufferProfile
 import app.openradio.domain.DataUsageEstimator
+import app.openradio.domain.DataUsageMath
+import app.openradio.domain.MonthlyUsage
+import androidx.compose.foundation.layout.PaddingValues
 import app.openradio.domain.Station
 import app.openradio.ui.AppViewModel
 import app.openradio.ui.components.NeuDropdownSelector
@@ -431,6 +434,7 @@ private fun PlaybackAudioSettings(vm: AppViewModel) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        DataUsageSummary(vm)
         Text("Buffer profile", style = MaterialTheme.typography.titleMedium)
         NeuDropdownSelector(
             label = "${prefs.bufferProfile.label} · ${prefs.bufferProfile.subtitle}",
@@ -443,6 +447,33 @@ private fun PlaybackAudioSettings(vm: AppViewModel) {
         EqualizerPresetPicker(prefs.eqPreset, vm::setEqPreset)
         PlaybackSwitch("Spatial audio", prefs.spatialAudio, vm::setSpatialAudio)
         PlaybackSwitch("Loudness normalization", prefs.loudnessNorm, vm::setLoudnessNorm)
+    }
+}
+
+/** Measured streaming data for this month and last month, split into mobile and Wi-Fi. */
+@Composable
+private fun DataUsageSummary(vm: AppViewModel) {
+    val months by vm.dataUsage.collectAsState()
+    val thisKey = remember { DataUsageMath.monthKey(System.currentTimeMillis()) }
+    val current = months.firstOrNull { it.month == thisKey } ?: MonthlyUsage(thisKey, 0, 0)
+    val last = months.firstOrNull { it.month == DataUsageMath.previousMonth(thisKey) }
+    Text("Data streamed", style = MaterialTheme.typography.titleMedium)
+    UsageLine("This month", current)
+    if (last != null) UsageLine("Last month", last)
+    if (months.isNotEmpty()) {
+        TextButton(onClick = vm::resetDataUsage, contentPadding = PaddingValues(0.dp)) { Text("Reset counters") }
+    }
+}
+
+@Composable
+private fun UsageLine(label: String, usage: MonthlyUsage) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Mobile ${DataUsageMath.format(usage.mobileBytes)} · Wi-Fi ${DataUsageMath.format(usage.wifiBytes)}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

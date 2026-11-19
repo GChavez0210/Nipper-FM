@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import app.openradio.data.local.AppDatabase
 import app.openradio.data.local.FavoriteGroupEntity
 import app.openradio.data.local.OnAirEntity
+import app.openradio.data.local.StreamHealthEntity
 import app.openradio.data.local.toDomain
 import app.openradio.data.local.toEntity
 import app.openradio.data.local.toSaved
@@ -19,6 +20,7 @@ import app.openradio.domain.PresetOrdering
 import app.openradio.domain.SavedStation
 import app.openradio.domain.Station
 import app.openradio.domain.StreamFeed
+import app.openradio.domain.UrlHealth
 import app.openradio.domain.VolumeTrim
 import app.openradio.ui.theme.AppearancePrefs
 import kotlinx.coroutines.flow.Flow
@@ -190,6 +192,31 @@ class StationRepository(
         dao.deleteOrphans()
     }
 
+    // ---- Stream URL health ------------------------------------------------------------------
+
+    suspend fun streamHealth(stationId: String): List<UrlHealth> =
+        dao.streamHealth(stationId).map { it.toDomain() }
+
+    /** Audio actually started from [url]: it is now the station's known-good URL. */
+    suspend fun recordUrlSuccess(stationId: String, url: String) = db.withTransaction {
+        val now = clock()
+        val existing = dao.streamHealth(stationId, url)
+        dao.upsertStreamHealth(
+            (existing ?: StreamHealthEntity(stationId, url)).copy(lastSuccessAt = now, failureCount = 0),
+        )
+        dao.pruneStreamHealth(now - HEALTH_RETENTION_MS)
+    }
+
+    suspend fun recordUrlFailure(stationId: String, url: String) {
+        val existing = dao.streamHealth(stationId, url)
+        dao.upsertStreamHealth(
+            (existing ?: StreamHealthEntity(stationId, url)).copy(
+                lastFailureAt = clock(),
+                failureCount = (existing?.failureCount ?: 0) + 1,
+            ),
+        )
+    }
+
     suspend fun rememberStreamUrl(stationId: String, url: String) {
         dao.updateStreamUrl(stationId, url)
     }
@@ -309,5 +336,6 @@ class StationRepository(
 
     companion object {
         const val MAX_RECENTS = 20
+        private const val HEALTH_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
     }
 }

@@ -12,6 +12,7 @@ import app.openradio.domain.Country
 import app.openradio.domain.CustomStreamBuilder
 import app.openradio.domain.EqPreset
 import app.openradio.domain.ErrorLogFormat
+import app.openradio.domain.MonthlyUsage
 import app.openradio.domain.FavoriteGroupDefaults
 import app.openradio.domain.OnAirEntry
 import app.openradio.domain.PlaybackPrefs
@@ -178,6 +179,14 @@ class AppViewModel(private val container: AppContainer, initialPrefs: Appearance
 
     fun play(station: Station) = playback.play(station)
 
+    /** Starts the most recent station (or first preset) right away, e.g. from Assistant. */
+    fun playLastStationNow() {
+        viewModelScope.launch {
+            val target = repo.recentsNow().firstOrNull() ?: repo.carPresetsNow().firstOrNull()
+            if (target != null) play(target) else _messages.value = "No recently played station yet."
+        }
+    }
+
     /** Opens [station] (or [lastStation]) in the player prepared and ready to start on tap. */
     fun openLastStationReady(station: Station? = lastStation.value, onOpened: () -> Unit = {}) {
         val target = station ?: return
@@ -272,6 +281,17 @@ class AppViewModel(private val container: AppContainer, initialPrefs: Appearance
             if (repo.bookmarkTrack(station, title)) {
                 _messages.value = "Bookmarked \"$title\""
             }
+        }
+    }
+
+    /** Measured streaming data per month, newest first. */
+    val dataUsage: StateFlow<List<MonthlyUsage>> =
+        container.usage.months.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun resetDataUsage() {
+        viewModelScope.launch {
+            container.usage.reset()
+            _messages.value = "Data usage counters reset."
         }
     }
 

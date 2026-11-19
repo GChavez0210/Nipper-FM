@@ -53,6 +53,8 @@ data class PlayerUiState(
     /** Sleep is waiting for the current track to end ([sleepEndsAtMs] is then only the safety cap). */
     val sleepAtEndOfTrack: Boolean = false,
     val volumeTrimDb: Int = 0,
+    /** Measured network bytes since the current station started (refreshed every ~30 s). */
+    val sessionBytes: Long = 0L,
     val recoveryAttempt: Int = 0,
     val recoveryMax: Int = 0,
     val errorMessage: String? = null,
@@ -273,6 +275,7 @@ class PlaybackConnection(private val context: Context) {
             sleepEndsAtMs = extras.getLong(SessionKeys.EXTRA_SLEEP_ENDS_AT, 0L),
             sleepAtEndOfTrack = extras.getBoolean(SessionKeys.EXTRA_SLEEP_END_OF_TRACK, false),
             volumeTrimDb = extras.getInt(SessionKeys.EXTRA_VOLUME_TRIM_DB, 0),
+            sessionBytes = extras.getLong(SessionKeys.EXTRA_SESSION_BYTES, 0L),
             recoveryAttempt = extras.getInt(SessionKeys.EXTRA_ATTEMPT, 0),
             recoveryMax = extras.getInt(SessionKeys.EXTRA_MAX_ATTEMPTS, 0),
             errorMessage = detail?.message ?: extras.getString(SessionKeys.EXTRA_MESSAGE)
