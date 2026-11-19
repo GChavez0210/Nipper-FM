@@ -1,11 +1,14 @@
 package app.openradio.ui.components
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.animation.Crossfade
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,10 +25,10 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FavoriteBorder
-import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material3.Icon
@@ -39,90 +42,57 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import app.openradio.R
 import app.openradio.domain.PlaybackStatus
 import app.openradio.domain.Station
-import app.openradio.ui.theme.LocalNeumorphicStyle
 import app.openradio.ui.theme.neuInset
 import app.openradio.ui.theme.neuRaised
 import coil3.compose.SubcomposeAsyncImage
 import coil3.compose.SubcomposeAsyncImageContent
 
 @Composable
-fun StationArt(station: Station, size: Dp, modifier: Modifier = Modifier) {
-    val shape = RoundedCornerShape(size / 4)
-    val accent = MaterialTheme.colorScheme.primary
+fun StationCover(station: Station, modifier: Modifier = Modifier) {
     Box(
-        modifier = modifier
-            .size(size)
-            .neuInset(shape = shape, depth = 3.dp, accentBorder = accent.copy(alpha = 0.28f)),
+        modifier.aspectRatio(1f).clip(RoundedCornerShape(8.dp)),
         contentAlignment = Alignment.Center,
     ) {
-        if (station.faviconUrl == null) {
-            Monogram(station, size)
+        val logo: @Composable () -> Unit = {
+            Image(
+                painterResource(R.drawable.nipper_fm_logo),
+                contentDescription = "Nipper FM",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        if (station.faviconUrl.isNullOrBlank()) {
+            logo()
         } else {
-            // Logos are often transparent or tiny, so they sit on a clean tile; the
-            // monogram stands in while loading and when the logo can't be fetched.
             SubcomposeAsyncImage(
                 model = station.faviconUrl,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
-                loading = { Monogram(station, size) },
-                error = { Monogram(station, size) },
-                success = {
-                    val imageScope = this
-                    Box(
-                        Modifier
-                            .size(size)
-                            .clip(shape)
-                            .background(Color.White),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        with(imageScope) {
-                            SubcomposeAsyncImageContent(Modifier.size(size).padding(size / 10))
-                        }
-                    }
-                },
-                modifier = Modifier.size(size).clip(shape),
+                modifier = Modifier.fillMaxSize(),
+                loading = { logo() },
+                error = { logo() },
             )
         }
     }
 }
 
 @Composable
-private fun Monogram(station: Station, size: Dp) {
-    val accent = MaterialTheme.colorScheme.primary
-    Box(
-        Modifier
-            .size(size)
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(
-                        accent.copy(alpha = 0.25f),
-                        accent.copy(alpha = 0.08f),
-                    ),
-                ),
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            station.monogram,
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.Bold,
-            style = if (size >= 120.dp) MaterialTheme.typography.displaySmall else MaterialTheme.typography.titleMedium,
-        )
-    }
+fun StationArt(station: Station, size: Dp, modifier: Modifier = Modifier) {
+    StationCover(station, modifier.size(size))
 }
 
 @Composable
@@ -133,9 +103,11 @@ fun StationRow(
     onClick: () -> Unit,
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier,
+    failedLastAttempt: Boolean = false,
     trailing: @Composable () -> Unit = {},
 ) {
     val accent = MaterialTheme.colorScheme.primary
+    val errColor = MaterialTheme.colorScheme.error
     val shape = RoundedCornerShape(22.dp)
     Row(
         modifier = modifier
@@ -171,7 +143,7 @@ fun StationRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (isCurrent) {
+            if (isCurrent && !failedLastAttempt) {
                 Spacer(Modifier.height(4.dp))
                 // State is shown with an icon and a word, not colour alone.
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -185,6 +157,23 @@ fun StationRow(
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = accent,
+                    )
+                }
+            } else if (failedLastAttempt) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.ErrorOutline,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = errColor,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "Failed last attempt",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = errColor,
                     )
                 }
             }
@@ -238,8 +227,8 @@ fun PinButton(pinned: Boolean, name: String, enabled: Boolean = true, onToggle: 
             ),
     ) {
         Icon(
-            if (pinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-            contentDescription = if (pinned) "Unpin $name from car presets" else "Pin $name to car presets",
+            if (pinned) Icons.Filled.DirectionsCar else Icons.Outlined.DirectionsCar,
+            contentDescription = if (pinned) "Remove $name from car presets" else "Add $name to car presets",
             tint = if (pinned) accent else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(20.dp),
         )
@@ -248,71 +237,25 @@ fun PinButton(pinned: Boolean, name: String, enabled: Boolean = true, onToggle: 
 
 @Composable
 fun PlayPauseButton(isPlaying: Boolean, size: Dp, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val accent = MaterialTheme.colorScheme.primary
-    val onAccent = MaterialTheme.colorScheme.onPrimary
-    val neu = LocalNeumorphicStyle.current
-    if (size >= 64.dp && !neu.isFlatHighContrast) {
-        // Large tactile neumorphic dial button (matches reference voice/music player control)
-        Box(
-            modifier = modifier
-                .size(size)
-                .neuRaised(
-                    shape = CircleShape,
-                    elevation = 8.dp,
-                    accentGlow = if (isPlaying) accent else null,
-                    borderWidth = 1.5.dp,
-                )
-                .clickable(onClick = onClick),
-            contentAlignment = Alignment.Center,
-        ) {
-            // Subtle glowing accent ring around the inner button
-            Canvas(Modifier.size(size - 10.dp)) {
-                drawArc(
-                    color = accent.copy(alpha = if (isPlaying) 0.9f else 0.35f),
-                    startAngle = -140f,
-                    sweepAngle = if (isPlaying) 280f else 120f,
-                    useCenter = false,
-                    style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .size(size * 0.72f)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.linearGradient(
-                            colors = if (isPlaying) {
-                                listOf(accent, accent.copy(alpha = 0.82f))
-                            } else {
-                                listOf(neu.raisedTopLeft, neu.raisedBottomRight)
-                            },
-                        ),
-                    )
-                    .border(1.dp, accent.copy(alpha = 0.65f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
+    val colors = MaterialTheme.colorScheme
+    val haptics = LocalHapticFeedback.current
+    Surface(
+        onClick = {
+            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+            onClick()
+        },
+        shape = CircleShape,
+        color = colors.primary,
+        contentColor = colors.onPrimary,
+        modifier = modifier.size(size).semantics {
+            contentDescription = if (isPlaying) "Pause" else "Play"
+        },
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Crossfade(targetState = isPlaying, label = "Playback icon") { playing ->
                 Icon(
-                    if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = if (isPlaying) onAccent else accent,
-                    modifier = Modifier.size(size * 0.38f),
-                )
-            }
-        }
-    } else {
-        Surface(
-            onClick = onClick,
-            shape = CircleShape,
-            color = accent,
-            contentColor = onAccent,
-            shadowElevation = if (neu.isFlatHighContrast) 0.dp else 4.dp,
-            border = BorderStroke(1.dp, accent.copy(alpha = 0.85f)),
-            modifier = modifier.size(size),
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = null,
                     modifier = Modifier.size(size * 0.5f),
                 )
             }
@@ -342,105 +285,6 @@ fun StatusChip(status: PlaybackStatus, attempt: Int, max: Int, modifier: Modifie
         Icon(icon, null, Modifier.size(16.dp), tint = fg)
         Spacer(Modifier.width(6.dp))
         Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = fg)
-    }
-}
-
-/**
- * Tactile neumorphic dial & radio-wave halo used on Now Playing (inspired by reference photos).
- */
-@Composable
-fun SignalArt(modifier: Modifier = Modifier) {
-    val color = MaterialTheme.colorScheme.primary
-    val neu = LocalNeumorphicStyle.current
-    val trackColor = if (neu.isDark) Color(0xFF13151B) else Color(0xFFDCE3EE)
-    val plateTop = neu.raisedTopLeft
-    val plateBottom = neu.raisedBottomRight
-    Canvas(modifier.semantics { contentDescription = "" }) {
-        val center = Offset(size.width / 2f, size.height / 2f)
-        val outerR = size.minDimension * 0.44f
-        val ringR = size.minDimension * 0.36f
-        val innerR = size.minDimension * 0.27f
-
-        // Outer soft platter shadow & disc
-        drawCircle(
-            brush = Brush.linearGradient(
-                colors = listOf(plateTop, plateBottom),
-                start = Offset(center.x - outerR, center.y - outerR),
-                end = Offset(center.x + outerR, center.y + outerR),
-            ),
-            radius = outerR,
-            center = center,
-        )
-        drawCircle(
-            color = color.copy(alpha = 0.18f),
-            radius = outerR,
-            center = center,
-            style = Stroke(width = 1.5.dp.toPx()),
-        )
-
-        // Recessed dial track groove
-        val strokeW = size.minDimension * 0.045f
-        drawCircle(
-            color = trackColor,
-            radius = ringR,
-            center = center,
-            style = Stroke(width = strokeW),
-        )
-
-        // Glowing accent arc along the dial groove (like the +40% and voice ring in reference photo 1)
-        drawArc(
-            brush = Brush.sweepGradient(
-                colors = listOf(
-                    color.copy(alpha = 0.15f),
-                    color.copy(alpha = 0.85f),
-                    color,
-                    color.copy(alpha = 0.2f),
-                ),
-                center = center,
-            ),
-            startAngle = -215f,
-            sweepAngle = 250f,
-            useCenter = false,
-            topLeft = Offset(center.x - ringR, center.y - ringR),
-            size = Size(ringR * 2, ringR * 2),
-            style = Stroke(width = strokeW * 0.82f, cap = StrokeCap.Round),
-        )
-
-        // Inner raised medallion
-        drawCircle(
-            brush = Brush.linearGradient(
-                colors = listOf(plateTop, plateBottom),
-                start = Offset(center.x - innerR, center.y - innerR),
-                end = Offset(center.x + innerR, center.y + innerR),
-            ),
-            radius = innerR,
-            center = center,
-        )
-        drawCircle(
-            color = color.copy(alpha = 0.38f),
-            radius = innerR,
-            center = center,
-            style = Stroke(width = 1.2.dp.toPx()),
-        )
-
-        // Subtle broadcast signal arcs inside medallion
-        for (i in 1..3) {
-            val r = innerR * (0.28f + i * 0.18f)
-            drawArc(
-                color = color.copy(alpha = 0.9f - i * 0.22f),
-                startAngle = 205f,
-                sweepAngle = 130f,
-                useCenter = false,
-                topLeft = Offset(center.x - r, center.y - r + innerR * 0.12f),
-                size = Size(r * 2, r * 2),
-                style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round),
-            )
-        }
-        drawCircle(
-            color = color,
-            radius = 4.dp.toPx(),
-            center = Offset(center.x, center.y + innerR * 0.18f),
-        )
     }
 }
 

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="18 18 72 72" role="img" aria-labelledby="title">
+  <title id="title">Nipper FM app icon</title>
+    <rect x="18" y="18" width="72" height="72" rx="18" fill="#0E0E10"/>
+    <path d="M37,29 A24,24 0 0 0 37,63 M71,29 A24,24 0 0 1 71,63 M44,36 A14,14 0 0 0 44,56 M64,36 A14,14 0 0 1 64,56" fill="none" stroke="#A480FF" stroke-width="4.5" stroke-linecap="round"/>
+    <path d="M54,41.5 a4.5,4.5 0 1,1 0,9 a4.5,4.5 0 1,1 0,-9 Z" fill="#A480FF"/>
+    <path d="M54,57 L64,77 H44 Z" fill="none" stroke="#A480FF" stroke-width="4.5" stroke-linejoin="round"/>
+</svg>

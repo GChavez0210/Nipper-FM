@@ -5,7 +5,7 @@ object VoiceMatch {
     private fun normalize(s: String) =
         s.lowercase().replace(Regex("[^\\p{L}\\p{N} ]"), " ").replace(Regex("\\s+"), " ").trim()
 
-    private val fillers = Regex("^(play|listen to|put on|start)\\s+|\\s+(radio|station|on open radio)$")
+    private val fillers = Regex("^(play|listen to|put on|start)\\s+|\\s+(radio|station|on nipper fm)$")
 
     fun cleanQuery(raw: String): String = normalize(raw).replace(fillers, "").trim()
 

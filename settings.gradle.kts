@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OpenRadio"
+rootProject.name = "NipperFM"
 include(":app")

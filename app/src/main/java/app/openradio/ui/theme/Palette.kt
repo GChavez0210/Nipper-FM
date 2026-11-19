@@ -5,11 +5,11 @@ import kotlin.math.pow
 enum class ThemeMode(val label: String) { System("System"), Dark("Dark"), Light("Light") }
 
 enum class DarkStyle(val label: String, val subtitle: String) {
-    Obsidian("Frosted Glass", "Translucent glass panels over an ambient aurora glow"),
+    Obsidian("Soft Dark", "Tactile neumorphic charcoal surfaces"),
     TrueBlack("High-Contrast Flat", "Pure black flat surfaces with crisp borders"),
 }
 
-/** Six preset accents. Each has a variant tuned for dark and for light (Paper White) surfaces. */
+/** Preset accents. Each has a variant tuned for dark and for light (Paper White) surfaces. */
 enum class Accent(val label: String, val dark: Long, val light: Long) {
     Cyan("Cyan", 0xFF29D3F5, 0xFF006275),
     Amber("Amber", 0xFFFFAE2B, 0xFF8A4F00),
@@ -17,6 +17,9 @@ enum class Accent(val label: String, val dark: Long, val light: Long) {
     Emerald("Emerald", 0xFF22CC8D, 0xFF006647),
     Crimson("Crimson", 0xFFFF6396, 0xFFA80E3B),
     Coral("Coral", 0xFFFF806B, 0xFFA13022),
+    // Keep the enum name for existing preferences and backups.
+    OffWhite("Graphite", 0xFFEDEAE2, 0xFF383C47),
+    Blue("Blue", 0xFF629BFF, 0xFF244B9B),
 }
 
 data class AppearancePrefs(

@@ -1,12 +1,12 @@
 package app.openradio.playback
 
-import androidx.annotation.OptIn
 import android.content.ComponentName
 import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.core.os.bundleOf
 import androidx.media3.common.C
@@ -15,10 +15,14 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
+import app.openradio.domain.FailureKind
+import app.openradio.domain.PlaybackErrorClassifier
+import app.openradio.domain.PlaybackErrorDetail
 import app.openradio.domain.PlaybackStatus
 import app.openradio.domain.PlaybackStatusRules
 import app.openradio.domain.RecoveryPhase
 import app.openradio.domain.Station
+import app.openradio.domain.StreamFeed
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +53,9 @@ data class PlayerUiState(
     val recoveryAttempt: Int = 0,
     val recoveryMax: Int = 0,
     val errorMessage: String? = null,
+    val errorDetail: PlaybackErrorDetail? = null,
+    val wifiOnlyBlocked: Boolean = false,
+    val audioSessionId: Int = 0,
     val signal: SignalInfo = SignalInfo(),
 )
 
@@ -100,9 +107,43 @@ class PlaybackConnection(private val context: Context) {
         it.play()
     }
 
+    /** Loads [station] into the player ready to start without auto-playing (for Last Station shortcut). */
+    fun prepareReady(station: Station) = withController {
+        if (it.currentMediaItem?.mediaId != MediaIds.station(station.id)) {
+            it.playWhenReady = false
+            it.setMediaItem(station.toMediaItem(playable = true))
+            it.prepare()
+        }
+    }
+
+    fun retryCurrent() = withController { c ->
+        c.prepare()
+        c.play()
+    }
+
+    fun allowMobileDataOnce() = withController { c ->
+        c.sendCustomCommand(
+            SessionCommand(SessionKeys.CMD_MOBILE_OVERRIDE, Bundle.EMPTY),
+            Bundle.EMPTY,
+        )
+    }
+
+    fun selectStreamFeed(feed: StreamFeed) = withController { c ->
+        c.sendCustomCommand(
+            SessionCommand(SessionKeys.CMD_SELECT_FEED, Bundle.EMPTY),
+            bundleOf(
+                SessionKeys.ARG_FEED_URL to feed.streamUrl,
+                SessionKeys.ARG_FEED_CODEC to feed.codec,
+                SessionKeys.ARG_FEED_BITRATE to feed.bitrateKbps,
+                SessionKeys.ARG_FEED_HLS to feed.isHls,
+            ),
+        )
+    }
+
     fun togglePlayPause() = withController { c ->
         val s = _state.value
         when {
+            s.wifiOnlyBlocked -> allowMobileDataOnce()
             s.status == PlaybackStatus.Unavailable || s.status == PlaybackStatus.Reconnecting && !c.playWhenReady -> {
                 c.prepare(); c.play()
             }
@@ -144,6 +185,13 @@ class PlaybackConnection(private val context: Context) {
         )
     }
 
+    fun addSleepMinutes(extraMinutes: Int = 15) = withController { c ->
+        c.sendCustomCommand(
+            SessionCommand(SessionKeys.CMD_SLEEP_ADD, Bundle.EMPTY),
+            bundleOf(SessionKeys.ARG_MINUTES to extraMinutes),
+        )
+    }
+
     fun livePosition(): LivePosition? {
         val c = controller ?: return null
         val win = liveWindowMs(c)
@@ -159,15 +207,25 @@ class PlaybackConnection(private val context: Context) {
         val recovery = runCatching {
             RecoveryPhase.valueOf(extras.getString(SessionKeys.EXTRA_RECOVERY) ?: RecoveryPhase.Idle.name)
         }.getOrDefault(RecoveryPhase.Idle)
+        val wifiBlocked = extras.getBoolean(SessionKeys.EXTRA_WIFI_BLOCKED, false)
+        val deviceOnline = extras.getBoolean(SessionKeys.EXTRA_DEVICE_ONLINE, true)
+        val failureKind = extras.getString(SessionKeys.EXTRA_FAILURE_KIND)?.let {
+            runCatching { FailureKind.valueOf(it) }.getOrNull()
+        }
+        val audioSessionId = extras.getInt(SessionKeys.EXTRA_AUDIO_SESSION_ID, 0)
 
-        val status = PlaybackStatusRules.derive(
-            hasItem = item != null,
-            playWhenReady = c.playWhenReady,
-            isReady = c.playbackState == Player.STATE_READY,
-            isBuffering = c.playbackState == Player.STATE_BUFFERING,
-            hasError = c.playerError != null,
-            recovery = recovery,
-        )
+        val status = if (wifiBlocked && item != null) {
+            PlaybackStatus.Unavailable
+        } else {
+            PlaybackStatusRules.derive(
+                hasItem = item != null,
+                playWhenReady = c.playWhenReady,
+                isReady = c.playbackState == Player.STATE_READY,
+                isBuffering = c.playbackState == Player.STATE_BUFFERING,
+                hasError = c.playerError != null,
+                recovery = recovery,
+            )
+        }
 
         val streamTitle = c.mediaMetadata.title?.toString()
         val track = streamTitle?.takeIf { it.isNotBlank() && it != station?.name }
@@ -176,6 +234,18 @@ class PlaybackConnection(private val context: Context) {
         val seekable = item != null && c.isCurrentMediaItemLive && c.isCurrentMediaItemSeekable &&
             c.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM) &&
             win >= MIN_LIVE_WINDOW_MS
+
+        val signal = readSignal(c, station)
+        val detail = if (status == PlaybackStatus.Unavailable || wifiBlocked) {
+            PlaybackErrorClassifier.describe(
+                failureKind = failureKind,
+                deviceHasNetwork = deviceOnline,
+                wifiOnlyBlocked = wifiBlocked,
+                bitrateKbps = signal.bitrateKbps ?: station?.bitrate ?: 0,
+            )
+        } else {
+            null
+        }
 
         _state.value = PlayerUiState(
             connected = true,
@@ -187,9 +257,12 @@ class PlaybackConnection(private val context: Context) {
             sleepEndsAtMs = extras.getLong(SessionKeys.EXTRA_SLEEP_ENDS_AT, 0L),
             recoveryAttempt = extras.getInt(SessionKeys.EXTRA_ATTEMPT, 0),
             recoveryMax = extras.getInt(SessionKeys.EXTRA_MAX_ATTEMPTS, 0),
-            errorMessage = extras.getString(SessionKeys.EXTRA_MESSAGE)
+            errorMessage = detail?.message ?: extras.getString(SessionKeys.EXTRA_MESSAGE)
                 ?: if (status == PlaybackStatus.Unavailable) "This station can't be played right now." else null,
-            signal = readSignal(c, station),
+            errorDetail = detail,
+            wifiOnlyBlocked = wifiBlocked,
+            audioSessionId = audioSessionId,
+            signal = signal,
         )
     }
 
