@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Assistant: "Hey Google, open last station on Nipper FM" starts the last station. -->
+    <capability android:name="actions.intent.OPEN_APP_FEATURE">
+        <intent
+            android:action="app.openradio.action.PLAY_LAST_STATION"
+            android:targetPackage="app.nipperfm"
+            android:targetClass="app.openradio.MainActivity">
+            <parameter
+                android:name="feature"
+                android:key="feature" />
+        </intent>
+    </capability>
+
     <shortcut
         android:shortcutId="last_station"
         android:enabled="true"
@@ -10,5 +22,22 @@
             android:action="app.openradio.action.LAST_STATION"
             android:targetPackage="app.nipperfm"
             android:targetClass="app.openradio.MainActivity" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="play_last_station"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_play_last_short"
+        android:shortcutLongLabel="@string/shortcut_play_last_long">
+        <intent
+            android:action="app.openradio.action.PLAY_LAST_STATION"
+            android:targetPackage="app.nipperfm"
+            android:targetClass="app.openradio.MainActivity" />
+        <capability-binding android:key="actions.intent.OPEN_APP_FEATURE">
+            <parameter-binding
+                android:key="feature"
+                android:value="@array/last_station_synonyms" />
+        </capability-binding>
     </shortcut>
 </shortcuts>

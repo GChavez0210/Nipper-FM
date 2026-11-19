@@ -13,6 +13,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import app.openradio.domain.OnAirEntry
 import app.openradio.domain.SavedStation
 import app.openradio.domain.Station
+import app.openradio.domain.UrlHealth
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -44,6 +45,18 @@ data class StationEntity(
     /** Per-station loudness offset in whole dB (see VolumeTrim). */
     val volumeTrimDb: Int = 0,
 )
+
+/** Per-station, per-URL outcome history used to avoid URLs that just failed. */
+@Entity(tableName = "stream_health", primaryKeys = ["stationId", "url"])
+data class StreamHealthEntity(
+    val stationId: String,
+    val url: String,
+    val lastSuccessAt: Long? = null,
+    val lastFailureAt: Long? = null,
+    val failureCount: Int = 0,
+)
+
+fun StreamHealthEntity.toDomain() = UrlHealth(url, lastSuccessAt, lastFailureAt, failureCount)
 
 @Entity(tableName = "favorite_groups")
 data class FavoriteGroupEntity(
@@ -193,6 +206,20 @@ interface StationDao {
     )
     suspend fun searchFavorites(q: String): List<StationEntity>
 
+    // ---- Stream URL health ------------------------------------------------------------------
+
+    @Query("SELECT * FROM stream_health WHERE stationId = :stationId")
+    suspend fun streamHealth(stationId: String): List<StreamHealthEntity>
+
+    @Query("SELECT * FROM stream_health WHERE stationId = :stationId AND url = :url")
+    suspend fun streamHealth(stationId: String, url: String): StreamHealthEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertStreamHealth(entity: StreamHealthEntity)
+
+    @Query("DELETE FROM stream_health WHERE COALESCE(lastSuccessAt, 0) < :before AND COALESCE(lastFailureAt, 0) < :before")
+    suspend fun pruneStreamHealth(before: Long)
+
     // ---- Recently On Air --------------------------------------------------------------------
 
     @Query("SELECT * FROM on_air_history ORDER BY timestampMs DESC LIMIT :limit")
@@ -218,8 +245,8 @@ interface StationDao {
 }
 
 @Database(
-    entities = [StationEntity::class, FavoriteGroupEntity::class, OnAirEntity::class],
-    version = 4,
+    entities = [StationEntity::class, FavoriteGroupEntity::class, OnAirEntity::class, StreamHealthEntity::class],
+    version = 5,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -258,6 +285,20 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE stations ADD COLUMN volumeTrimDb INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS stream_health (" +
+                        "stationId TEXT NOT NULL, " +
+                        "url TEXT NOT NULL, " +
+                        "lastSuccessAt INTEGER, " +
+                        "lastFailureAt INTEGER, " +
+                        "failureCount INTEGER NOT NULL, " +
+                        "PRIMARY KEY(stationId, url))",
+                )
             }
         }
     }

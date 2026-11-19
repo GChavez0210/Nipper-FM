@@ -17,7 +17,10 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -50,6 +53,11 @@ import app.openradio.domain.SleepCycle
 import app.openradio.domain.SleepTimer
 import app.openradio.domain.Station
 import app.openradio.domain.StreamFeed
+import app.openradio.domain.StreamUrlPreference
+import app.openradio.ShortcutPublisher
+import app.openradio.tile.LastStationTileService
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.delay
 import app.openradio.domain.VoiceMatch
 import app.openradio.domain.VolumeTrim
 import app.openradio.widget.RadioWidgetProvider
@@ -101,6 +109,20 @@ class RadioService : MediaLibraryService() {
     private var trimDb = 0
     private var fadeVolume = 1f
 
+    /** Network bytes not yet written to the monthly totals, and bytes for the current station. */
+    private val pendingBytes = AtomicLong()
+    private val sessionBytes = AtomicLong()
+    private val byteCounter = object : TransferListener {
+        override fun onTransferInitializing(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+        override fun onTransferStart(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+        override fun onTransferEnd(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean) = Unit
+        override fun onBytesTransferred(source: DataSource, dataSpec: DataSpec, isNetwork: Boolean, bytesTransferred: Int) {
+            if (!isNetwork || bytesTransferred <= 0) return
+            pendingBytes.addAndGet(bytesTransferred.toLong())
+            sessionBytes.addAndGet(bytesTransferred.toLong())
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
 
@@ -109,7 +131,7 @@ class RadioService : MediaLibraryService() {
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(10_000)
             .setReadTimeoutMs(15_000)
-        val dataSourceFactory = DefaultDataSource.Factory(this, http)
+        val dataSourceFactory = DefaultDataSource.Factory(this, http).setTransferListener(byteCounter)
         // Allocate max buffer pool large enough for Cellular Saver (75 s) while starting at Standard
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
@@ -222,6 +244,15 @@ class RadioService : MediaLibraryService() {
         }
         registerNetworkCallback()
         updateMediaButtons()
+
+        // Persist measured data usage and refresh the session counter every 30 s.
+        scope.launch {
+            while (true) {
+                delay(USAGE_FLUSH_MS)
+                flushUsage()
+                if (player.isPlaying) publishExtras()
+            }
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
@@ -232,6 +263,8 @@ class RadioService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        // The service scope is about to be cancelled; write the remaining bytes on their own.
+        flushUsage(CoroutineScope(Dispatchers.IO))
         networkCallback?.let { getSystemService<ConnectivityManager>()?.unregisterNetworkCallback(it) }
         audioFx.release()
         scope.cancel()
@@ -282,9 +315,12 @@ class RadioService : MediaLibraryService() {
 
         val station = player.currentMediaItem?.toStation() ?: repo.localStation(stationId)
         if (station != null) {
-            val feeds = alternateFeedsCache.getOrPut(station.id) {
+            val ranked = alternateFeedsCache.getOrPut(station.id) {
                 runCatching { repo.alternateFeedsFor(station) }.getOrDefault(emptyList())
             }
+            // Feeds that worked before go first; ones that just failed go last.
+            val health = runCatching { repo.streamHealth(station.id) }.getOrDefault(emptyList())
+            val feeds = StreamUrlPreference.orderFeeds(ranked, health, System.currentTimeMillis())
             val failover = AlternateFeedSelector.nextFailoverFeed(currentUrl, feeds, triedUrlsForCurrent)
             if (failover != null) {
                 triedUrlsForCurrent += failover.streamUrl
@@ -341,6 +377,7 @@ class RadioService : MediaLibraryService() {
             mediaItem?.localConfiguration?.uri?.toString()?.let { triedUrlsForCurrent += it }
             reconnect.onStationChanged(id)
             sleepTimer.onStationChanged()
+            sessionBytes.set(0)
             val stationId = id?.let(MediaIds::stationId)
             scope.launch { setTrim(stationId?.let { repo.volumeTrim(it) } ?: 0, persist = null) }
             updateMediaButtons()
@@ -349,6 +386,7 @@ class RadioService : MediaLibraryService() {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (!isPlaying) {
+                flushUsage()
                 updateWidget()
                 return
             }
@@ -363,9 +401,11 @@ class RadioService : MediaLibraryService() {
             updateWidget()
             if (recordedStationId == item.mediaId) return
             recordedStationId = item.mediaId
+            ShortcutPublisher.reportPlayed(this@RadioService, station)
             // Recents are written and any failedLastAttempt flag is cleared once audio actually starts.
             scope.launch {
                 repo.recordPlayed(station)
+                repo.recordUrlSuccess(station.id, station.streamUrl)
                 repo.registerClick(station.id)
                 // Warm alternate feeds in the background for seamless failover if needed later.
                 if (station.id !in alternateFeedsCache) {
@@ -414,6 +454,12 @@ class RadioService : MediaLibraryService() {
                 "${error.errorCodeName} kind=${kind.name} online=$online" + (error.message?.let { " · $it" } ?: ""),
                 item.toStation(),
             )
+            val failedUrl = item.localConfiguration?.uri?.toString()
+            val failedStation = MediaIds.stationId(item.mediaId)
+            // Offline errors say nothing about the URL itself.
+            if (online && failedUrl != null && failedStation != null) {
+                scope.launch { repo.recordUrlFailure(failedStation, failedUrl) }
+            }
             reconnect.onPlaybackError(
                 stationId = item.mediaId,
                 kind = kind,
@@ -466,11 +512,23 @@ class RadioService : MediaLibraryService() {
             putInt(SessionKeys.EXTRA_AUDIO_SESSION_ID, player.audioSessionId)
             putBoolean(SessionKeys.EXTRA_SLEEP_END_OF_TRACK, sleepTimer.endOfTrack)
             putInt(SessionKeys.EXTRA_VOLUME_TRIM_DB, trimDb)
+            putLong(SessionKeys.EXTRA_SESSION_BYTES, sessionBytes.get())
         }
         s.setSessionExtras(extras)
     }
 
     // ---- volume trim, media buttons & error log ---------------------------------------------
+
+    /** Adds bytes streamed since the last flush to this month's mobile or Wi-Fi total. */
+    private fun flushUsage(target: CoroutineScope = scope) {
+        val bytes = pendingBytes.getAndSet(0)
+        if (bytes <= 0) return
+        val wifi = isOnUnmeteredWifi()
+        val usage = container.usage
+        target.launch {
+            runCatching { usage.add(mobileBytes = if (wifi) 0 else bytes, wifiBytes = if (wifi) bytes else 0) }
+        }
+    }
 
     private fun applyVolume() {
         player.volume = (VolumeTrim.attenuationFactor(trimDb) * fadeVolume).coerceIn(0f, 1f)
@@ -542,6 +600,7 @@ class RadioService : MediaLibraryService() {
         val rawTitle = player.mediaMetadata.title?.toString()
         val track = rawTitle?.takeIf { it.isNotBlank() && it != station?.name }
         RadioWidgetProvider.updateAllWidgets(this, station, status, track)
+        LastStationTileService.requestUpdate(this)
     }
 
     private fun registerNetworkCallback() {
@@ -761,8 +820,9 @@ class RadioService : MediaLibraryService() {
             // Cancel recovery for the previous station before anything else can retry it.
             MediaIds.stationId(requested.mediaId)?.let { reconnect.onStationChanged(MediaIds.station(it)) }
 
-            val station = resolveRequest(requested)
+            val resolved = resolveRequest(requested)
                 ?: throw IllegalArgumentException("Station not found: ${requested.mediaId}")
+            val station = preferKnownGoodUrl(resolved)
             reconnect.onStationChanged(MediaIds.station(station.id))
 
             // Starting from a preset, recent or favorite queues that whole list so next/previous
@@ -830,6 +890,15 @@ class RadioService : MediaLibraryService() {
         return null
     }
 
+    /** Swaps in a URL that worked before when the station's usual URL failed recently. */
+    private suspend fun preferKnownGoodUrl(station: Station): Station {
+        val health = runCatching { repo.streamHealth(station.id) }.getOrDefault(emptyList())
+        val url = StreamUrlPreference.choose(station.streamUrl, health, System.currentTimeMillis())
+        if (url == station.streamUrl) return station
+        logEvent("Known-good URL", "Starting with a URL that worked before; the usual one failed recently", station, url)
+        return station.copy(streamUrl = url, isHls = url.contains(".m3u8", ignoreCase = true))
+    }
+
     /** Favorites first (exact matches win), then the directory. */
     private suspend fun searchStations(rawQuery: String): List<Station> {
         val q = VoiceMatch.cleanQuery(rawQuery).ifEmpty { rawQuery }
@@ -859,6 +928,7 @@ class RadioService : MediaLibraryService() {
 
     companion object {
         private const val STALE_PAUSE_MS = 30_000L
+        private const val USAGE_FLUSH_MS = 30_000L
 
         // Android Auto content-style hints (androidx.media.utils.MediaConstants values).
         private const val CONTENT_STYLE_PLAYABLE_HINT = "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT"

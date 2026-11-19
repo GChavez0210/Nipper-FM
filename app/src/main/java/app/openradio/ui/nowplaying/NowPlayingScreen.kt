@@ -67,6 +67,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.openradio.domain.DataUsageMath
 import app.openradio.domain.OnAirEntry
 import app.openradio.domain.PlaybackErrorDetail
 import app.openradio.domain.PlaybackErrorKind
@@ -799,6 +800,8 @@ private fun SignalSheet(vm: AppViewModel) {
         )
         SignalRow("Buffer", info.bufferedMs?.let { "%.1f s".format(it / 1000.0) })
         SignalRow("Output", info.route)
+        val ui by vm.playback.state.collectAsState()
+        SignalRow("Data this session", ui.sessionBytes.takeIf { it > 0 }?.let(DataUsageMath::format) ?: "—")
     }
 }
 

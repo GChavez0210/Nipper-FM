@@ -50,6 +50,8 @@ object SessionKeys {
     const val EXTRA_AUDIO_SESSION_ID = "audio_session_id"
     const val EXTRA_SLEEP_END_OF_TRACK = "sleep_end_of_track"
     const val EXTRA_VOLUME_TRIM_DB = "volume_trim_db"
+    /** Network bytes streamed since the current station started. */
+    const val EXTRA_SESSION_BYTES = "session_bytes"
 }
 
 private const val X_URL = "x_stream_url"

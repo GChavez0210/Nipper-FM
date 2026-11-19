@@ -5,4 +5,11 @@
     <string name="widget_description">Current station, playback controls, and quick access to pinned presets</string>
     <string name="widget_subtitle_default">Tap to tune in</string>
     <string name="widget_play_pause_desc">Play or pause radio</string>
+    <string name="tile_label">Nipper FM</string>
+    <string name="tile_no_station">No station yet</string>
+    <string name="tile_connecting">Connecting…</string>
+    <string name="tile_playing">Playing</string>
+    <string name="tile_tap_to_play">Tap to play</string>
+    <string name="shortcut_play_last_short">Play last station</string>
+    <string name="shortcut_play_last_long">Start playing the last station</string>
 </resources>
