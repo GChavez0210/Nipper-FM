@@ -1,0 +1,91 @@
+package app.openradio.playback
+
+import android.os.Bundle
+import androidx.core.net.toUri
+import androidx.core.os.bundleOf
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
+import app.openradio.domain.Station
+
+/** Stable media IDs shared by the phone UI, the media session and Android Auto. */
+object MediaIds {
+    const val ROOT = "root"
+    const val PRESETS = "presets"
+    const val RECENTS = "recents"
+    const val RECENT_ROOT = "recent_root"
+    private const val STATION_PREFIX = "station:"
+
+    fun station(uuid: String) = STATION_PREFIX + uuid
+    fun stationId(mediaId: String): String? = mediaId.takeIf { it.startsWith(STATION_PREFIX) }?.removePrefix(STATION_PREFIX)
+}
+
+/** Keys for session extras (service -> controllers) and custom commands (controllers -> service). */
+object SessionKeys {
+    const val CMD_SLEEP = "app.openradio.SLEEP_TIMER"
+    const val ARG_MINUTES = "minutes"
+
+    const val EXTRA_RECOVERY = "recovery"          // RecoveryPhase name
+    const val EXTRA_ATTEMPT = "attempt"
+    const val EXTRA_MAX_ATTEMPTS = "max_attempts"
+    const val EXTRA_MESSAGE = "message"
+    const val EXTRA_SLEEP_ENDS_AT = "sleep_ends_at" // wall-clock millis, 0 = none
+}
+
+private const val X_URL = "x_stream_url"
+private const val X_COUNTRY = "x_country"
+private const val X_CC = "x_cc"
+private const val X_STATE = "x_state"
+private const val X_TAGS = "x_tags"
+private const val X_CODEC = "x_codec"
+private const val X_BITRATE = "x_bitrate"
+private const val X_HLS = "x_hls"
+
+/** Builds a media item. [playable] adds the stream URI so a player can load it; browse items omit it. */
+fun Station.toMediaItem(playable: Boolean): MediaItem {
+    val metadata = MediaMetadata.Builder()
+        // Playable items leave title unset so in-stream ICY track titles can populate it;
+        // displayTitle and station keep the station name for notifications, car and UI.
+        .apply { if (!playable) setTitle(name) }
+        .setDisplayTitle(name)
+        .setSubtitle(location.ifEmpty { null })
+        .setStation(name)
+        .setArtworkUri(faviconUrl?.toUri())
+        .setIsPlayable(true)
+        .setIsBrowsable(false)
+        .setMediaType(MediaMetadata.MEDIA_TYPE_RADIO_STATION)
+        .setExtras(
+            bundleOf(
+                X_URL to streamUrl, X_COUNTRY to country, X_CC to countryCode, X_STATE to state,
+                X_TAGS to tags.joinToString(","), X_CODEC to codec, X_BITRATE to bitrate, X_HLS to isHls,
+            ),
+        )
+        .build()
+    val builder = MediaItem.Builder().setMediaId(MediaIds.station(id)).setMediaMetadata(metadata)
+    if (playable) {
+        builder.setUri(streamUrl)
+        if (isHls || streamUrl.contains(".m3u8", ignoreCase = true)) builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+    }
+    return builder.build()
+}
+
+/** Reconstructs the station carried by a media item (works for items created by [toMediaItem]). */
+fun MediaItem.toStation(): Station? {
+    val id = MediaIds.stationId(mediaId) ?: return null
+    val x: Bundle? = mediaMetadata.extras
+    val url = localConfiguration?.uri?.toString() ?: x?.getString(X_URL) ?: return null
+    return Station(
+        id = id,
+        name = mediaMetadata.station?.toString() ?: mediaMetadata.displayTitle?.toString()
+            ?: mediaMetadata.title?.toString() ?: "Station",
+        streamUrl = url,
+        faviconUrl = mediaMetadata.artworkUri?.toString(),
+        country = x?.getString(X_COUNTRY),
+        countryCode = x?.getString(X_CC),
+        state = x?.getString(X_STATE),
+        tags = x?.getString(X_TAGS).orEmpty().split(',').filter { it.isNotBlank() },
+        codec = x?.getString(X_CODEC),
+        bitrate = x?.getInt(X_BITRATE) ?: 0,
+        isHls = x?.getBoolean(X_HLS) ?: false,
+    )
+}
