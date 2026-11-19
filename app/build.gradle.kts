@@ -10,7 +10,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "app.openradio"
+        applicationId = "app.nipperfm"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

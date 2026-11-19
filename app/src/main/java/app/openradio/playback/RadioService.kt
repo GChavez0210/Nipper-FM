@@ -22,6 +22,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
@@ -37,6 +38,7 @@ import app.openradio.RadioApp
 import app.openradio.data.remote.RadioBrowserClient
 import app.openradio.domain.AlternateFeedSelector
 import app.openradio.domain.BufferProfile
+import app.openradio.domain.ErrorLogEntry
 import app.openradio.domain.FailureKind
 import app.openradio.domain.PlaybackErrorClassifier
 import app.openradio.domain.PlaybackPrefs
@@ -44,10 +46,12 @@ import app.openradio.domain.PlaybackStatus
 import app.openradio.domain.PlaybackStatusRules
 import app.openradio.domain.RecoveryPhase
 import app.openradio.domain.ReconnectController
+import app.openradio.domain.SleepCycle
 import app.openradio.domain.SleepTimer
 import app.openradio.domain.Station
 import app.openradio.domain.StreamFeed
 import app.openradio.domain.VoiceMatch
+import app.openradio.domain.VolumeTrim
 import app.openradio.widget.RadioWidgetProvider
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
@@ -92,6 +96,11 @@ class RadioService : MediaLibraryService() {
     private val alternateFeedsCache = HashMap<String, List<StreamFeed>>()
     private val triedUrlsForCurrent = HashSet<String>()
 
+    private var favoriteIds: Set<String> = emptySet()
+    /** Player volume = per-station trim (cuts only) × sleep fade-out. */
+    private var trimDb = 0
+    private var fadeVolume = 1f
+
     override fun onCreate() {
         super.onCreate()
 
@@ -132,11 +141,18 @@ class RadioService : MediaLibraryService() {
             scope = scope,
             clock = System::currentTimeMillis,
             onExpired = {
-                player.volume = 1f
+                fadeVolume = 1f
+                applyVolume()
                 player.pause()
             },
-            onChanged = { publishExtras() },
-            onFadeVolume = { vol -> player.volume = vol.coerceIn(0.05f, 1f) },
+            onChanged = {
+                publishExtras()
+                updateMediaButtons()
+            },
+            onFadeVolume = { vol ->
+                fadeVolume = vol.coerceIn(0.05f, 1f)
+                applyVolume()
+            },
         )
 
         player.addListener(PlayerEvents())
@@ -197,7 +213,15 @@ class RadioService : MediaLibraryService() {
                 updateWidget()
             }
         }
+        // Heart state for the notification / lock-screen / car favorite button.
+        scope.launch {
+            repo.favoriteIds.collect {
+                favoriteIds = it
+                updateMediaButtons()
+            }
+        }
         registerNetworkCallback()
+        updateMediaButtons()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
@@ -264,10 +288,18 @@ class RadioService : MediaLibraryService() {
             val failover = AlternateFeedSelector.nextFailoverFeed(currentUrl, feeds, triedUrlsForCurrent)
             if (failover != null) {
                 triedUrlsForCurrent += failover.streamUrl
+                logEvent("Failover", "Switching to alternate feed: ${failover.label} (${failover.qualityBadge})", station, failover.streamUrl)
                 return failover.streamUrl
             }
         }
-        return repo.fetchFreshUrl(stationId)
+        val fresh = repo.fetchFreshUrl(stationId)
+        logEvent(
+            "Retry",
+            if (fresh != null && fresh != currentUrl) "Using refreshed directory URL" else "Retrying the same URL",
+            station,
+            fresh ?: currentUrl,
+        )
+        return fresh
     }
 
     private fun onRecoveryStateChanged(recovery: app.openradio.domain.RecoveryState) {
@@ -278,6 +310,12 @@ class RadioService : MediaLibraryService() {
             if (station != null && PlaybackErrorClassifier.shouldFlagStationFailed(kind, online)) {
                 scope.launch { repo.markFailedAttempt(station, failed = true) }
             }
+            logEvent(
+                "Recovery failed",
+                "kind=${kind.name} online=$online attempts=${recovery.attempt}/${recovery.maxAttempts}" +
+                    (recovery.message?.let { " · $it" } ?: ""),
+                station,
+            )
         }
         publishExtras()
         updateWidget()
@@ -302,6 +340,10 @@ class RadioService : MediaLibraryService() {
             triedUrlsForCurrent.clear()
             mediaItem?.localConfiguration?.uri?.toString()?.let { triedUrlsForCurrent += it }
             reconnect.onStationChanged(id)
+            sleepTimer.onStationChanged()
+            val stationId = id?.let(MediaIds::stationId)
+            scope.launch { setTrim(stationId?.let { repo.volumeTrim(it) } ?: 0, persist = null) }
+            updateMediaButtons()
             updateWidget()
         }
 
@@ -338,6 +380,7 @@ class RadioService : MediaLibraryService() {
             val title = mediaMetadata.title?.toString()?.trim().orEmpty()
             if (title.isNotEmpty() && !title.equals(station.name, ignoreCase = true)) {
                 scope.launch { repo.recordOnAir(station, title) }
+                sleepTimer.onTrackTitle(title)
             }
             updateWidget()
         }
@@ -364,7 +407,13 @@ class RadioService : MediaLibraryService() {
         override fun onPlayerError(error: PlaybackException) {
             val item = player.currentMediaItem ?: return
             if (!player.playWhenReady) return // user paused: nothing to recover
-            val kind = if (!isDeviceOnline()) FailureKind.Network else classifyPlaybackError(error.errorCode)
+            val online = isDeviceOnline()
+            val kind = if (!online) FailureKind.Network else classifyPlaybackError(error.errorCode)
+            logEvent(
+                "Playback error",
+                "${error.errorCodeName} kind=${kind.name} online=$online" + (error.message?.let { " · $it" } ?: ""),
+                item.toStation(),
+            )
             reconnect.onPlaybackError(
                 stationId = item.mediaId,
                 kind = kind,
@@ -415,8 +464,68 @@ class RadioService : MediaLibraryService() {
             putBoolean(SessionKeys.EXTRA_DEVICE_ONLINE, online)
             putBoolean(SessionKeys.EXTRA_WIFI_BLOCKED, wifiOnlyBlocked)
             putInt(SessionKeys.EXTRA_AUDIO_SESSION_ID, player.audioSessionId)
+            putBoolean(SessionKeys.EXTRA_SLEEP_END_OF_TRACK, sleepTimer.endOfTrack)
+            putInt(SessionKeys.EXTRA_VOLUME_TRIM_DB, trimDb)
         }
         s.setSessionExtras(extras)
+    }
+
+    // ---- volume trim, media buttons & error log ---------------------------------------------
+
+    private fun applyVolume() {
+        player.volume = (VolumeTrim.attenuationFactor(trimDb) * fadeVolume).coerceIn(0f, 1f)
+    }
+
+    /** Applies [db] to the live player; when [persist] is set, also stores it for that station. */
+    private fun setTrim(db: Int, persist: Station?) {
+        trimDb = VolumeTrim.clamp(db)
+        audioFx.setBoostMillibels(VolumeTrim.boostMillibels(trimDb))
+        applyVolume()
+        publishExtras()
+        if (persist != null) scope.launch { repo.setVolumeTrim(persist, trimDb) }
+    }
+
+    /**
+     * Favorite and sleep buttons for the media notification, the lock screen and Android Auto.
+     * They take the back/forward slots when there is no previous/next station, otherwise they
+     * fall back to the overflow area.
+     */
+    private fun updateMediaButtons() {
+        val s = session ?: return
+        val buttons = mutableListOf<CommandButton>()
+        val station = player.currentMediaItem?.toStation()
+        if (station != null) {
+            val fav = station.id in favoriteIds
+            buttons += CommandButton.Builder(if (fav) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
+                .setDisplayName(if (fav) "Remove from favorites" else "Add to favorites")
+                .setSessionCommand(SessionCommand(SessionKeys.CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
+                .setSlots(CommandButton.SLOT_BACK, CommandButton.SLOT_OVERFLOW)
+                .build()
+        }
+        val sleeping = sleepTimer.endsAtMs != null
+        buttons += CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+            .setCustomIconResId(if (sleeping) R.drawable.ic_sleep_on else R.drawable.ic_sleep_off)
+            .setDisplayName(
+                when {
+                    sleepTimer.endOfTrack -> "Sleep after this track (tap for 15 min)"
+                    sleeping -> "Sleep timer on (tap to extend or turn off)"
+                    else -> "Sleep timer (15 min)"
+                },
+            )
+            .setSessionCommand(SessionCommand(SessionKeys.CMD_SLEEP_CYCLE, Bundle.EMPTY))
+            .setSlots(CommandButton.SLOT_FORWARD, CommandButton.SLOT_OVERFLOW)
+            .build()
+        s.setMediaButtonPreferences(buttons)
+    }
+
+    private fun logEvent(
+        event: String,
+        detail: String?,
+        station: Station? = player.currentMediaItem?.toStation(),
+        url: String? = player.currentMediaItem?.localConfiguration?.uri?.toString(),
+    ) {
+        val entry = ErrorLogEntry(System.currentTimeMillis(), event, station?.name, station?.id, detail, url)
+        scope.launch { runCatching { container.errorLog.record(entry) } }
     }
 
     private fun updateWidget() {
@@ -470,6 +579,10 @@ class RadioService : MediaLibraryService() {
                 .add(SessionCommand(SessionKeys.CMD_SLEEP_ADD, Bundle.EMPTY))
                 .add(SessionCommand(SessionKeys.CMD_MOBILE_OVERRIDE, Bundle.EMPTY))
                 .add(SessionCommand(SessionKeys.CMD_SELECT_FEED, Bundle.EMPTY))
+                .add(SessionCommand(SessionKeys.CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
+                .add(SessionCommand(SessionKeys.CMD_SLEEP_CYCLE, Bundle.EMPTY))
+                .add(SessionCommand(SessionKeys.CMD_SLEEP_END_OF_TRACK, Bundle.EMPTY))
+                .add(SessionCommand(SessionKeys.CMD_SET_VOLUME_TRIM, Bundle.EMPTY))
                 .build()
             // Connecting (including from the car) never starts audio.
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
@@ -496,6 +609,36 @@ class RadioService : MediaLibraryService() {
                 SessionKeys.CMD_SLEEP_ADD -> {
                     val extra = args.getInt(SessionKeys.ARG_MINUTES, 15).coerceAtLeast(1)
                     sleepTimer.addMinutes(extra)
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                SessionKeys.CMD_TOGGLE_FAVORITE -> {
+                    val station = player.currentMediaItem?.toStation()
+                        ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                    // Flip the heart immediately; the favorites flow confirms it shortly after.
+                    favoriteIds = if (station.id in favoriteIds) favoriteIds - station.id else favoriteIds + station.id
+                    updateMediaButtons()
+                    scope.launch { repo.toggleFavorite(station) }
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                SessionKeys.CMD_SLEEP_CYCLE -> {
+                    val remaining = if (sleepTimer.endOfTrack) 0L
+                    else (sleepTimer.endsAtMs ?: 0L) - System.currentTimeMillis()
+                    val next = SleepCycle.next(remaining)
+                    if (next > 0) sleepTimer.start(next) else sleepTimer.cancel()
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                SessionKeys.CMD_SLEEP_END_OF_TRACK -> {
+                    val station = player.currentMediaItem?.toStation()
+                    val title = player.mediaMetadata.title?.toString()?.trim()
+                        ?.takeIf { it.isNotEmpty() && !it.equals(station?.name, ignoreCase = true) }
+                        ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                    sleepTimer.stopAfterTrack(title)
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                SessionKeys.CMD_SET_VOLUME_TRIM -> {
+                    val station = player.currentMediaItem?.toStation()
+                        ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                    setTrim(args.getInt(SessionKeys.ARG_TRIM_DB, 0), persist = station)
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
                 SessionKeys.CMD_MOBILE_OVERRIDE -> {
@@ -622,12 +765,15 @@ class RadioService : MediaLibraryService() {
                 ?: throw IllegalArgumentException("Station not found: ${requested.mediaId}")
             reconnect.onStationChanged(MediaIds.station(station.id))
 
-            // Starting from a preset or recent queues the whole list so next/previous work in the car.
+            // Starting from a preset, recent or favorite queues that whole list so next/previous
+            // work on the lock screen, the notification and in the car.
             val presets = repo.carPresetsNow()
             val recents = repo.recentsNow()
+            val favorites = repo.favoritesNow().map { it.station }
             val list = when {
                 presets.any { it.id == station.id } -> presets
                 recents.any { it.id == station.id } -> recents
+                favorites.any { it.id == station.id } -> favorites
                 else -> listOf(station)
             }
             val index = list.indexOfFirst { it.id == station.id }.coerceAtLeast(0)

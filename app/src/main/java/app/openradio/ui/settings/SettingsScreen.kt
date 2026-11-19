@@ -38,7 +38,9 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.os.Build
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -99,6 +101,31 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
                     }.isSuccess
                 }
                 vm.showMessage(if (ok) "Backup exported." else "Failed to export backup.")
+            }
+        }
+    }
+
+    var errorLogCount by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(Unit) { errorLogCount = vm.errorLogCount() }
+
+    val errorLogLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val version = runCatching {
+                    context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                }.getOrNull() ?: "?"
+                val device = "${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}"
+                val text = vm.buildErrorLogText(version, device)
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            out.write(text.toByteArray(Charsets.UTF_8))
+                        } ?: error("Cannot open output stream")
+                    }.isSuccess
+                }
+                vm.showMessage(if (ok) "Error log exported." else "Failed to export error log.")
             }
         }
     }
@@ -319,6 +346,48 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit) {
                     Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Restore")
+                }
+            }
+        }
+
+        Section("Diagnostics")
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .neuRaised(shape = RoundedCornerShape(24.dp), elevation = 5.dp)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "Playback errors, retries and feed failovers are kept on this device only. " +
+                    "Export the log to share it when reporting a problem." +
+                    (errorLogCount?.let { " $it entries." } ?: ""),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = { errorLogLauncher.launch("nipperfm-playback-errors.txt") },
+                    enabled = errorLogCount != 0,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Filled.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Export log")
+                }
+                OutlinedButton(
+                    onClick = {
+                        vm.clearErrorLog()
+                        errorLogCount = 0
+                    },
+                    enabled = errorLogCount != 0,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Clear")
                 }
             }
         }

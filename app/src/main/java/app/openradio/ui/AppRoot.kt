@@ -211,7 +211,9 @@ private fun MiniPlayer(vm: AppViewModel, onClick: () -> Unit) {
     LaunchedEffect(ui.sleepEndsAtMs) {
         while (ui.sleepEndsAtMs > 0) { now = System.currentTimeMillis(); delay(1_000) }
     }
-    val sleepText = if (ui.sleepEndsAtMs > 0) {
+    val sleepText = if (ui.sleepAtEndOfTrack) {
+        "Sleep after track"
+    } else if (ui.sleepEndsAtMs > 0) {
         val total = ((ui.sleepEndsAtMs - now).coerceAtLeast(0) / 1000).toInt()
         "Sleep %d:%02d".format(total / 60, total % 60)
     } else {

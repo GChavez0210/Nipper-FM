@@ -26,6 +26,13 @@ object SessionKeys {
     const val CMD_SLEEP_ADD = "app.openradio.SLEEP_ADD_MINUTES"
     const val CMD_MOBILE_OVERRIDE = "app.openradio.MOBILE_DATA_OVERRIDE"
     const val CMD_SELECT_FEED = "app.openradio.SELECT_STREAM_FEED"
+    /** Toggles favorite for the current station (notification, lock screen, Android Auto). */
+    const val CMD_TOGGLE_FAVORITE = "app.openradio.TOGGLE_FAVORITE"
+    /** Steps the sleep timer Off → 15 → 30 → 60 → Off (notification, lock screen, Android Auto). */
+    const val CMD_SLEEP_CYCLE = "app.openradio.SLEEP_CYCLE"
+    const val CMD_SLEEP_END_OF_TRACK = "app.openradio.SLEEP_END_OF_TRACK"
+    const val CMD_SET_VOLUME_TRIM = "app.openradio.SET_VOLUME_TRIM"
+    const val ARG_TRIM_DB = "trim_db"
     const val ARG_MINUTES = "minutes"
     const val ARG_FEED_URL = "feed_url"
     const val ARG_FEED_CODEC = "feed_codec"
@@ -41,6 +48,8 @@ object SessionKeys {
     const val EXTRA_DEVICE_ONLINE = "device_online"
     const val EXTRA_WIFI_BLOCKED = "wifi_blocked"
     const val EXTRA_AUDIO_SESSION_ID = "audio_session_id"
+    const val EXTRA_SLEEP_END_OF_TRACK = "sleep_end_of_track"
+    const val EXTRA_VOLUME_TRIM_DB = "volume_trim_db"
 }
 
 private const val X_URL = "x_stream_url"

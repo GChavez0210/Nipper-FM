@@ -50,6 +50,9 @@ data class PlayerUiState(
     /** Non-null only when the stream exposes a seekable live window. */
     val seekableLive: Boolean = false,
     val sleepEndsAtMs: Long = 0L,
+    /** Sleep is waiting for the current track to end ([sleepEndsAtMs] is then only the safety cap). */
+    val sleepAtEndOfTrack: Boolean = false,
+    val volumeTrimDb: Int = 0,
     val recoveryAttempt: Int = 0,
     val recoveryMax: Int = 0,
     val errorMessage: String? = null,
@@ -192,6 +195,19 @@ class PlaybackConnection(private val context: Context) {
         )
     }
 
+    /** Stops playback when the stream's current track ends (needs track metadata). */
+    fun sleepAtEndOfTrack() = withController { c ->
+        c.sendCustomCommand(SessionCommand(SessionKeys.CMD_SLEEP_END_OF_TRACK, Bundle.EMPTY), Bundle.EMPTY)
+    }
+
+    /** Sets and remembers the current station's volume trim in whole dB. */
+    fun setVolumeTrim(db: Int) = withController { c ->
+        c.sendCustomCommand(
+            SessionCommand(SessionKeys.CMD_SET_VOLUME_TRIM, Bundle.EMPTY),
+            bundleOf(SessionKeys.ARG_TRIM_DB to db),
+        )
+    }
+
     fun livePosition(): LivePosition? {
         val c = controller ?: return null
         val win = liveWindowMs(c)
@@ -255,6 +271,8 @@ class PlaybackConnection(private val context: Context) {
             isPlaying = c.isPlaying,
             seekableLive = seekable,
             sleepEndsAtMs = extras.getLong(SessionKeys.EXTRA_SLEEP_ENDS_AT, 0L),
+            sleepAtEndOfTrack = extras.getBoolean(SessionKeys.EXTRA_SLEEP_END_OF_TRACK, false),
+            volumeTrimDb = extras.getInt(SessionKeys.EXTRA_VOLUME_TRIM_DB, 0),
             recoveryAttempt = extras.getInt(SessionKeys.EXTRA_ATTEMPT, 0),
             recoveryMax = extras.getInt(SessionKeys.EXTRA_MAX_ATTEMPTS, 0),
             errorMessage = detail?.message ?: extras.getString(SessionKeys.EXTRA_MESSAGE)

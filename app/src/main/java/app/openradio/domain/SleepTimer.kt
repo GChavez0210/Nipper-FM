@@ -23,6 +23,11 @@ class SleepTimer(
     var endsAtMs: Long? = null
         private set
 
+    /** True while waiting for the current track to end; [endsAtMs] is then the safety cap. */
+    var endOfTrack: Boolean = false
+        private set
+    private var armedTitle: String? = null
+
     fun start(minutes: Int) {
         val target = clock() + minutes * 60_000L
         scheduleTo(target)
@@ -34,11 +39,52 @@ class SleepTimer(
         scheduleTo(base + extraMinutes * 60_000L)
     }
 
-    private fun scheduleTo(endsAt: Long) {
+    /**
+     * Stops playback as soon as the stream's track title changes away from [currentTitle].
+     * If no change arrives within [maxWaitMinutes], it stops anyway (with the normal fade).
+     */
+    fun stopAfterTrack(currentTitle: String, maxWaitMinutes: Int = END_OF_TRACK_CAP_MINUTES) {
+        scheduleTo(clock() + maxWaitMinutes * 60_000L, notify = false)
+        endOfTrack = true
+        armedTitle = currentTitle.trim()
+        onChanged(endsAtMs)
+    }
+
+    /** Feed every stream title change here; ends an armed end-of-track timer on a new title. */
+    fun onTrackTitle(title: String?) {
+        if (!endOfTrack) return
+        val t = title?.trim().orEmpty()
+        if (t.isEmpty() || t.equals(armedTitle, ignoreCase = true)) return
+        if (armedTitle == null) {
+            // First title after a station switch: wait for this track to end instead.
+            armedTitle = t
+            return
+        }
+        job?.cancel()
+        job = null
+        reset()
+        onChanged(null)
+        onExpired()
+        onFadeVolume(1f)
+    }
+
+    /** A new station's first title must not count as "the track ended"; re-arm on it instead. */
+    fun onStationChanged() {
+        if (endOfTrack) armedTitle = null
+    }
+
+    private fun reset() {
+        endsAtMs = null
+        endOfTrack = false
+        armedTitle = null
+    }
+
+    private fun scheduleTo(endsAt: Long, notify: Boolean = true) {
         job?.cancel()
         onFadeVolume(1f)
+        reset()
         endsAtMs = endsAt
-        onChanged(endsAt)
+        if (notify) onChanged(endsAt)
         job = scope.launch {
             while (true) {
                 val remaining = endsAt - clock()
@@ -51,7 +97,7 @@ class SleepTimer(
                 }
                 delay(minOf(remaining, tickMs))
             }
-            endsAtMs = null
+            reset()
             onChanged(null)
             onExpired()
             onFadeVolume(1f)
@@ -63,8 +109,12 @@ class SleepTimer(
         job = null
         onFadeVolume(1f)
         if (endsAtMs != null) {
-            endsAtMs = null
+            reset()
             onChanged(null)
         }
+    }
+
+    companion object {
+        const val END_OF_TRACK_CAP_MINUTES = 30
     }
 }

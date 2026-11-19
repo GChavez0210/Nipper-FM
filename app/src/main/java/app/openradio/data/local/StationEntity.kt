@@ -41,6 +41,8 @@ data class StationEntity(
     val isCustom: Boolean = false,
     val groupName: String? = null,
     val failedLastAttempt: Boolean = false,
+    /** Per-station loudness offset in whole dB (see VolumeTrim). */
+    val volumeTrimDb: Int = 0,
 )
 
 @Entity(tableName = "favorite_groups")
@@ -90,6 +92,7 @@ fun Station.toEntity(existing: StationEntity? = null) = StationEntity(
     isCustom = isCustom || (existing?.isCustom == true),
     groupName = existing?.groupName,
     failedLastAttempt = existing?.failedLastAttempt ?: false,
+    volumeTrimDb = existing?.volumeTrimDb ?: 0,
 )
 
 @Dao
@@ -166,7 +169,16 @@ interface StationDao {
     )
     suspend fun trimRecents(keep: Int)
 
-    @Query("DELETE FROM stations WHERE isFavorite = 0 AND lastPlayedAt IS NULL AND failedLastAttempt = 0")
+    @Query("UPDATE stations SET volumeTrimDb = :db WHERE id = :id")
+    suspend fun setVolumeTrim(id: String, db: Int)
+
+    @Query("SELECT volumeTrimDb FROM stations WHERE id = :id")
+    suspend fun volumeTrim(id: String): Int?
+
+    @Query(
+        "DELETE FROM stations WHERE isFavorite = 0 AND lastPlayedAt IS NULL AND failedLastAttempt = 0 " +
+            "AND volumeTrimDb = 0",
+    )
     suspend fun deleteOrphans()
 
     @Query("SELECT id FROM stations WHERE failedLastAttempt = 1")
@@ -207,7 +219,7 @@ interface StationDao {
 
 @Database(
     entities = [StationEntity::class, FavoriteGroupEntity::class, OnAirEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -240,6 +252,12 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE stations ADD COLUMN failedLastAttempt INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE stations ADD COLUMN volumeTrimDb INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

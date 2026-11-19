@@ -71,7 +71,11 @@ import app.openradio.domain.OnAirEntry
 import app.openradio.domain.PlaybackErrorDetail
 import app.openradio.domain.PlaybackErrorKind
 import app.openradio.domain.PlaybackStatus
+import app.openradio.domain.SleepTimer
 import app.openradio.domain.StreamFeed
+import app.openradio.domain.VolumeTrim
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import kotlin.math.roundToInt
 import app.openradio.playback.LivePosition
 import app.openradio.playback.SignalInfo
 import app.openradio.ui.AppViewModel
@@ -94,7 +98,7 @@ import kotlinx.coroutines.delay
 /** Sleep dial stops in minutes; 0 = timer off. */
 private val SLEEP_STEPS = listOf(0, 15, 30, 45, 60, 90)
 
-private enum class NowPlayingMenu { Signal, OnAir, Source }
+private enum class NowPlayingMenu { Signal, OnAir, Source, Trim }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -108,6 +112,7 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
     var showSignal by remember { mutableStateOf(false) }
     var showOnAir by remember { mutableStateOf(false) }
     var showFeeds by remember { mutableStateOf(false) }
+    var showTrim by remember { mutableStateOf(false) }
     val alternateFeeds by vm.alternateFeeds.collectAsState()
 
     if (station == null) {
@@ -269,7 +274,7 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
                 size = 88.dp,
                 onClick = vm.playback::togglePlayPause,
             )
-            SleepButton(ui.sleepEndsAtMs) { showSleep = true }
+            SleepButton(ui.sleepEndsAtMs, ui.sleepAtEndOfTrack) { showSleep = true }
         }
         Spacer(Modifier.height(22.dp))
         Row(
@@ -290,6 +295,12 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
                         Icons.Filled.History,
                     ),
                     NeuMenuOption("Stream source", NowPlayingMenu.Source, "Alternate feeds, codec & bitrate", Icons.Filled.Tune),
+                    NeuMenuOption(
+                        "Volume trim",
+                        NowPlayingMenu.Trim,
+                        if (ui.volumeTrimDb == 0) "Balance this station's loudness" else "This station: ${VolumeTrim.label(ui.volumeTrimDb)}",
+                        Icons.AutoMirrored.Filled.VolumeUp,
+                    ),
                 ),
                 onSelect = { choice ->
                     when (choice) {
@@ -299,10 +310,11 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
                             vm.loadAlternateFeeds(station)
                             showFeeds = true
                         }
+                        NowPlayingMenu.Trim -> showTrim = true
                     }
                 },
             )
-            if (ui.sleepEndsAtMs > 0) {
+            if (ui.sleepEndsAtMs > 0 && !ui.sleepAtEndOfTrack) {
                 Row(
                     modifier = Modifier
                         .height(38.dp)
@@ -322,8 +334,20 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
         ModalBottomSheet(onDismissRequest = { showSleep = false }) {
             SleepSheet(
                 endsAtMs = ui.sleepEndsAtMs,
+                atEndOfTrack = ui.sleepAtEndOfTrack,
+                canStopAfterTrack = ui.trackTitle != null,
                 onSet = { vm.playback.setSleepTimer(it); showSleep = false },
                 onAddFifteen = { vm.playback.addSleepMinutes(15); showSleep = false },
+                onEndOfTrack = { vm.playback.sleepAtEndOfTrack(); showSleep = false },
+            )
+        }
+    }
+    if (showTrim) {
+        ModalBottomSheet(onDismissRequest = { showTrim = false }) {
+            VolumeTrimSheet(
+                stationName = station.name,
+                trimDb = ui.volumeTrimDb,
+                onChange = vm.playback::setVolumeTrim,
             )
         }
     }
@@ -471,7 +495,7 @@ private fun RecentlyOnAirSheet(
 }
 
 @Composable
-private fun SleepButton(endsAtMs: Long, onClick: () -> Unit) {
+private fun SleepButton(endsAtMs: Long, atEndOfTrack: Boolean, onClick: () -> Unit) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(endsAtMs) {
         while (endsAtMs > 0) { now = System.currentTimeMillis(); delay(1_000) }
@@ -494,13 +518,21 @@ private fun SleepButton(endsAtMs: Long, onClick: () -> Unit) {
         ) {
             Icon(
                 Icons.Outlined.Bedtime,
-                contentDescription = if (endsAtMs > 0) "Sleep timer, ${formatMinutes(remaining)} left" else "Set sleep timer",
+                contentDescription = when {
+                    atEndOfTrack -> "Sleep after this track"
+                    endsAtMs > 0 -> "Sleep timer, ${formatMinutes(remaining)} left"
+                    else -> "Set sleep timer"
+                },
                 tint = if (endsAtMs > 0) accent else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         if (endsAtMs > 0) {
             Spacer(Modifier.height(4.dp))
-            Text(formatMinutes(remaining), style = MaterialTheme.typography.labelMedium, color = accent)
+            Text(
+                if (atEndOfTrack) "Track" else formatMinutes(remaining),
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+            )
         }
     }
 }
@@ -511,8 +543,15 @@ private fun formatMinutes(ms: Long): String {
 }
 
 @Composable
-private fun SleepSheet(endsAtMs: Long, onSet: (Int?) -> Unit, onAddFifteen: () -> Unit) {
-    val active = endsAtMs > 0
+private fun SleepSheet(
+    endsAtMs: Long,
+    atEndOfTrack: Boolean,
+    canStopAfterTrack: Boolean,
+    onSet: (Int?) -> Unit,
+    onAddFifteen: () -> Unit,
+    onEndOfTrack: () -> Unit,
+) {
+    val active = endsAtMs > 0 && !atEndOfTrack
     val initial = remember(endsAtMs) {
         if (!active) {
             2 // 30 min default
@@ -551,9 +590,65 @@ private fun SleepSheet(endsAtMs: Long, onSet: (Int?) -> Unit, onAddFifteen: () -
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (active) OutlinedButton(onClick = onAddFifteen) { Text("+15 min") }
             FilledTonalButton(onClick = { onSet(minutes.takeIf { it > 0 }) }) {
-                Text(if (minutes == 0) "Turn off" else if (active) "Restart timer" else "Start timer")
+                Text(if (minutes == 0) "Turn off" else if (active || atEndOfTrack) "Restart timer" else "Start timer")
             }
         }
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = onEndOfTrack, enabled = canStopAfterTrack && !atEndOfTrack) {
+            Text(if (atEndOfTrack) "Stopping after this track" else "Stop after this track")
+        }
+        Text(
+            when {
+                atEndOfTrack -> "Stops when the title changes, or after ${SleepTimer.END_OF_TRACK_CAP_MINUTES} min at most."
+                canStopAfterTrack -> "Uses the station's track titles."
+                else -> "This station isn't sending track titles."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun VolumeTrimSheet(stationName: String, trimDb: Int, onChange: (Int) -> Unit) {
+    var value by remember(trimDb) { mutableIntStateOf(trimDb) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .padding(bottom = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Volume trim", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Remembered for $stationName. Cuts lower the player volume; boosts add gain.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(16.dp))
+        Text(
+            VolumeTrim.label(value),
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { value = it.roundToInt() },
+            onValueChangeFinished = { onChange(value) },
+            valueRange = VolumeTrim.MIN_DB.toFloat()..VolumeTrim.MAX_DB.toFloat(),
+            steps = VolumeTrim.MAX_DB - VolumeTrim.MIN_DB - 1,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(VolumeTrim.label(VolumeTrim.MIN_DB), style = MaterialTheme.typography.labelSmall)
+            Text(VolumeTrim.label(VolumeTrim.MAX_DB), style = MaterialTheme.typography.labelSmall)
+        }
+        Spacer(Modifier.height(12.dp))
+        TextButton(onClick = { value = 0; onChange(0) }, enabled = value != 0) { Text("Reset to 0 dB") }
     }
 }
 

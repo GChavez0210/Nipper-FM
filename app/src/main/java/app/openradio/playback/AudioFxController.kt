@@ -19,6 +19,15 @@ class AudioFxController {
     private var virtualizer: Virtualizer? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var currentPrefs: PlaybackPrefs = PlaybackPrefs()
+    private var boostMb: Int = 0
+
+    /** Extra makeup gain (millibels) for a positive per-station volume trim. */
+    fun setBoostMillibels(mb: Int) {
+        val next = mb.coerceAtLeast(0)
+        if (next == boostMb) return
+        boostMb = next
+        applyPrefs(currentPrefs)
+    }
 
     fun bindSession(audioSessionId: Int) {
         val nextSessionId = audioSessionId.coerceAtLeast(0)
@@ -61,11 +70,12 @@ class AudioFxController {
             }
         }
 
-        // 3. Loudness Normalization (LoudnessEnhancer gentle broadcast boost)
+        // 3. Loudness Normalization (+3.5 dB gentle makeup gain) plus any per-station boost.
         runCatching {
-            if (prefs.loudnessNorm) {
+            val gainMb = (if (prefs.loudnessNorm) 350 else 0) + boostMb
+            if (gainMb > 0) {
                 val le = loudnessEnhancer ?: LoudnessEnhancer(sid).also { loudnessEnhancer = it }
-                le.setTargetGain(350) // +3.5 dB gentle makeup gain for quiet streams
+                le.setTargetGain(gainMb)
                 le.enabled = true
             } else {
                 loudnessEnhancer?.enabled = false

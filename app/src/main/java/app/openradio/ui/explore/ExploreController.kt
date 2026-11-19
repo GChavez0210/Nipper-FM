@@ -45,6 +45,7 @@ class ExploreController(
     private var requestId = 0
     private var job: Job? = null
     private var moreJob: Job? = null
+    private var userPickedCountry = false
 
     fun setQuery(query: String) {
         if (query == _state.value.query) return
@@ -53,6 +54,14 @@ class ExploreController(
     }
 
     fun setCountry(country: Country?) {
+        userPickedCountry = true
+        _state.update { it.copy(country = country) }
+        reload(0)
+    }
+
+    /** Applies a location-detected country unless the user has already chosen one (or All). */
+    fun applyDetectedCountry(country: Country) {
+        if (userPickedCountry || _state.value.country != null) return
         _state.update { it.copy(country = country) }
         reload(0)
     }
