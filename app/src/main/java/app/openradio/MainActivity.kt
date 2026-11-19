@@ -39,9 +39,17 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val prefs by vm.appearance.collectAsState()
-            val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+            // Location (coarse) pre-selects the user's country in Explore; detection runs once the
+            // prompt resolves and falls back to the mobile network country if it is denied.
+            val askPermissions = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestMultiplePermissions(),
+            ) { vm.detectCountryOnce() }
             LaunchedEffect(Unit) {
-                if (Build.VERSION.SDK_INT >= 33) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                val wanted = buildList {
+                    add(Manifest.permission.ACCESS_COARSE_LOCATION)
+                    if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                askPermissions.launch(wanted.toTypedArray())
             }
             NipperFmTheme(prefs) { AppRoot(vm) }
         }

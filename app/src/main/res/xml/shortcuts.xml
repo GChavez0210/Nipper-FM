@@ -8,7 +8,7 @@
         android:shortcutLongLabel="@string/shortcut_last_station_long">
         <intent
             android:action="app.openradio.action.LAST_STATION"
-            android:targetPackage="app.openradio"
+            android:targetPackage="app.nipperfm"
             android:targetClass="app.openradio.MainActivity" />
     </shortcut>
 </shortcuts>

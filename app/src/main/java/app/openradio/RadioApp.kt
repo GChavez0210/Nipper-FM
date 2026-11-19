@@ -2,6 +2,8 @@ package app.openradio
 
 import android.app.Application
 import androidx.room.Room
+import app.openradio.data.CountryLocator
+import app.openradio.data.PlaybackErrorLog
 import app.openradio.data.PreferencesRepository
 import app.openradio.data.StationRepository
 import app.openradio.data.local.AppDatabase
@@ -18,12 +20,14 @@ class AppContainer(app: Application) {
         .build()
     val directory = RadioBrowserClient(httpClient)
     private val database = Room.databaseBuilder(app, AppDatabase::class.java, "radio.db")
-        .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
+        .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
         .fallbackToDestructiveMigration(true)
         .build()
     val stations = StationRepository(database, directory)
     val preferences = PreferencesRepository(app)
     val playback = PlaybackConnection(app)
+    val countryLocator = CountryLocator(app)
+    val errorLog = PlaybackErrorLog(app)
 }
 
 class RadioApp : Application() {

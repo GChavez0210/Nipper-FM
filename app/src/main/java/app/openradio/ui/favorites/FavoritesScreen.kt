@@ -33,6 +33,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import app.openradio.domain.FavoriteSort
+import app.openradio.domain.FavoritesQuery
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,13 +77,16 @@ fun FavoritesScreen(
     var manageCarPresets by remember { mutableStateOf(false) }
     var showNewGroupDialog by remember { mutableStateOf(false) }
     var showCustomStreamDialog by remember { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var sort by rememberSaveable { mutableStateOf(FavoriteSort.RecentlyAdded) }
 
     val pinned = favorites.filter { it.pinnedOrder != null }.sortedBy { it.pinnedOrder }
-    val filteredFavorites = remember(favorites, selectedGroup, manageCarPresets) {
-        favorites.filter { saved ->
+    val filteredFavorites = remember(favorites, selectedGroup, manageCarPresets, searchQuery, sort) {
+        val inScope = favorites.filter { saved ->
             (!manageCarPresets || saved.pinnedOrder == null) &&
                 (selectedGroup == null || saved.groupName.equals(selectedGroup, ignoreCase = true))
         }
+        FavoritesQuery.apply(inScope, searchQuery, sort)
     }
 
     if (favorites.isEmpty() && recents.isEmpty()) {
@@ -231,7 +240,48 @@ fun FavoritesScreen(
                 }
             }
 
-            if (filteredFavorites.isEmpty() && selectedGroup != null) {
+            item(key = "fav-search") {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Search favorites") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.weight(1f),
+                    )
+                    NeuDropdownSelector(
+                        label = sort.label,
+                        active = sort != FavoriteSort.RecentlyAdded,
+                        leadingIcon = Icons.AutoMirrored.Filled.Sort,
+                        options = FavoriteSort.entries.map { NeuMenuOption(it.label, it) },
+                        onSelect = { sort = it },
+                    )
+                }
+            }
+
+            if (filteredFavorites.isEmpty() && searchQuery.isNotBlank()) {
+                item {
+                    MessagePanel(
+                        "No matches",
+                        "No favorites match \"${searchQuery.trim()}\".",
+                    )
+                }
+            } else if (filteredFavorites.isEmpty() && selectedGroup != null) {
                 item {
                     MessagePanel(
                         "No stations in $selectedGroup",

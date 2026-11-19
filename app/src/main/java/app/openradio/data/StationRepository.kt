@@ -19,6 +19,7 @@ import app.openradio.domain.PresetOrdering
 import app.openradio.domain.SavedStation
 import app.openradio.domain.Station
 import app.openradio.domain.StreamFeed
+import app.openradio.domain.VolumeTrim
 import app.openradio.ui.theme.AppearancePrefs
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -176,6 +177,17 @@ class StationRepository(
                 cleanName.startsWith(candidate.name, ignoreCase = true)
         }
         return AlternateFeedSelector.rankFeeds(station, matches)
+    }
+
+    // ---- Per-station volume trim ------------------------------------------------------------
+
+    suspend fun volumeTrim(stationId: String): Int = dao.volumeTrim(stationId) ?: 0
+
+    /** Stores [db] for [station], creating its cached row if needed so the trim survives restarts. */
+    suspend fun setVolumeTrim(station: Station, trimDb: Int) = db.withTransaction {
+        upsertKeepingFlags(station)
+        dao.setVolumeTrim(station.id, VolumeTrim.clamp(trimDb))
+        dao.deleteOrphans()
     }
 
     suspend fun rememberStreamUrl(stationId: String, url: String) {

@@ -11,6 +11,7 @@ import app.openradio.domain.BufferProfile
 import app.openradio.domain.Country
 import app.openradio.domain.CustomStreamBuilder
 import app.openradio.domain.EqPreset
+import app.openradio.domain.ErrorLogFormat
 import app.openradio.domain.FavoriteGroupDefaults
 import app.openradio.domain.OnAirEntry
 import app.openradio.domain.PlaybackPrefs
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 data class FilterOptions(
     val countries: List<Country> = emptyList(),
@@ -90,6 +92,24 @@ class AppViewModel(private val container: AppContainer, initialPrefs: Appearance
     init {
         playback.connect()
         explore.reload()
+    }
+
+    private var countryDetectionStarted = false
+
+    /**
+     * Detects the user's current country once per launch and pre-selects it in Explore.
+     * Call after the location permission prompt resolves; falls back to the mobile network country.
+     */
+    fun detectCountryOnce() {
+        if (countryDetectionStarted) return
+        countryDetectionStarted = true
+        viewModelScope.launch {
+            val code = runCatching { container.countryLocator.detectCountryCode() }.getOrNull() ?: return@launch
+            val known = _filters.value.countries.firstOrNull { it.code.equals(code, ignoreCase = true) }
+            val name = Locale.Builder().setRegion(code).build().getDisplayCountry(Locale.getDefault())
+                .ifBlank { code }
+            explore.applyDetectedCountry(known ?: Country(name, code, 0))
+        }
     }
 
     private val _popularCountryCodes = MutableStateFlow<List<String>>(emptyList())
@@ -252,6 +272,19 @@ class AppViewModel(private val container: AppContainer, initialPrefs: Appearance
             if (repo.bookmarkTrack(station, title)) {
                 _messages.value = "Bookmarked \"$title\""
             }
+        }
+    }
+
+    /** Readable playback-error log for export; [appVersion] and [device] go in the header. */
+    suspend fun buildErrorLogText(appVersion: String, device: String): String =
+        ErrorLogFormat.export(container.errorLog.entries(), appVersion, device)
+
+    suspend fun errorLogCount(): Int = container.errorLog.entries().size
+
+    fun clearErrorLog() {
+        viewModelScope.launch {
+            container.errorLog.clear()
+            _messages.value = "Playback error log cleared."
         }
     }
 
