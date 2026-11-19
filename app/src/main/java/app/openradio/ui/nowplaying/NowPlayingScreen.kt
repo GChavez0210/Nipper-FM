@@ -8,6 +8,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -84,7 +85,7 @@ import app.openradio.ui.components.FavoriteButton
 import app.openradio.ui.components.LiveAudioVisualizerPanel
 import app.openradio.ui.components.NeuDropdownSelector
 import app.openradio.ui.components.NeuMenuOption
-import app.openradio.ui.components.NeuRotaryDial
+import androidx.compose.runtime.saveable.rememberSaveable
 import app.openradio.ui.components.PlayPauseButton
 import app.openradio.ui.components.StationCover
 import app.openradio.ui.components.StatusChip
@@ -96,8 +97,7 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlinx.coroutines.delay
 
-/** Sleep dial stops in minutes; 0 = timer off. */
-private val SLEEP_STEPS = listOf(0, 15, 30, 45, 60, 90)
+private val SLEEP_STEPS = listOf(15, 30, 45, 60, 90)
 
 private enum class NowPlayingMenu { Signal, OnAir, Source, Trim, Equalizer, Shortcut }
 
@@ -109,7 +109,7 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: (() -> Unit)?) {
     val onAirHistory by vm.onAirHistory.collectAsState()
     val context = LocalContext.current
     val station = ui.station
-    var showSleep by remember { mutableStateOf(false) }
+    var showSleep by rememberSaveable { mutableStateOf(false) }
     var showSignal by remember { mutableStateOf(false) }
     var showOnAir by remember { mutableStateOf(false) }
     var showFeeds by remember { mutableStateOf(false) }
@@ -342,14 +342,7 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: (() -> Unit)?) {
 
     if (showSleep) {
         ModalBottomSheet(onDismissRequest = { showSleep = false }) {
-            SleepSheet(
-                endsAtMs = ui.sleepEndsAtMs,
-                atEndOfTrack = ui.sleepAtEndOfTrack,
-                canStopAfterTrack = ui.trackTitle != null,
-                onSet = { vm.playback.setSleepTimer(it); showSleep = false },
-                onAddFifteen = { vm.playback.addSleepMinutes(15); showSleep = false },
-                onEndOfTrack = { vm.playback.sleepAtEndOfTrack(); showSleep = false },
-            )
+            SleepTimerSetup(vm, onDone = { showSleep = false }, modifier = Modifier.verticalScroll(rememberScrollState()))
         }
     }
     if (showEq) {
@@ -570,60 +563,68 @@ private fun formatMinutes(ms: Long): String {
 }
 
 @Composable
-private fun SleepSheet(
-    endsAtMs: Long,
-    atEndOfTrack: Boolean,
-    canStopAfterTrack: Boolean,
-    onSet: (Int?) -> Unit,
-    onAddFifteen: () -> Unit,
-    onEndOfTrack: () -> Unit,
-) {
-    val active = endsAtMs > 0 && !atEndOfTrack
-    val initial = remember(endsAtMs) {
-        if (!active) {
-            2 // 30 min default
-        } else {
-            val remainingMin = ((endsAtMs - System.currentTimeMillis()) / 60_000).toInt()
+internal fun SleepTimerScreen(vm: AppViewModel, onBack: () -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        TextButton(onClick = onBack, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("Back")
+        }
+        SleepTimerSetup(vm, onDone = onBack)
+    }
+}
+
+@Composable
+private fun SleepTimerSetup(vm: AppViewModel, onDone: () -> Unit, modifier: Modifier = Modifier) {
+    val ui by vm.playback.state.collectAsState()
+    val active = ui.sleepEndsAtMs > 0
+    val atEndOfTrack = ui.sleepAtEndOfTrack
+    val canStopAfterTrack = ui.trackTitle != null
+    val initial = remember(ui.sleepEndsAtMs, atEndOfTrack) {
+        if (!active || atEndOfTrack) 1 else {
+            val remainingMin = (ui.sleepEndsAtMs - System.currentTimeMillis()) / 60_000
             SLEEP_STEPS.indices.minBy { abs(SLEEP_STEPS[it] - remainingMin) }
         }
     }
-    var index by remember(initial) { mutableIntStateOf(initial) }
+    var index by rememberSaveable(initial) { mutableIntStateOf(initial) }
     val minutes = SLEEP_STEPS[index]
+
     Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 24.dp)
-            .padding(bottom = 28.dp),
+        modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text("Sleep timer", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(4.dp))
         Text(
-            "Audio fades out before playback stops.",
+            if (atEndOfTrack) "Stopping after this track" else if (active) "Timer is on" else "Audio fades out before playback stops.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(16.dp))
-        NeuRotaryDial(
-            title = "Minutes",
-            steps = SLEEP_STEPS.map { if (it == 0) "Off" else "$it" },
-            selectedIndex = index,
-            onSelectIndex = { index = it },
-            subtitle = if (minutes == 0) "Timer off" else "$minutes min",
-            dialSize = 160.dp,
+        if (active) {
+            OutlinedButton(
+                onClick = { vm.playback.setSleepTimer(null); onDone() },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Turn off sleep timer") }
+        }
+        Text("$minutes min", style = MaterialTheme.typography.titleMedium)
+        Slider(
+            value = index.toFloat(),
+            onValueChange = { index = it.roundToInt() },
+            valueRange = 0f..SLEEP_STEPS.lastIndex.toFloat(),
+            steps = SLEEP_STEPS.size - 2,
+            modifier = Modifier.fillMaxWidth().semantics { stateDescription = "$minutes minutes" },
         )
-        Spacer(Modifier.height(18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (active) OutlinedButton(onClick = onAddFifteen) { Text("+15 min") }
-            FilledTonalButton(onClick = { onSet(minutes.takeIf { it > 0 }) }) {
-                Text(if (minutes == 0) "Turn off" else if (active || atEndOfTrack) "Restart timer" else "Start timer")
+            if (active && !atEndOfTrack) {
+                OutlinedButton(onClick = { vm.playback.addSleepMinutes(15); onDone() }) { Text("+15 min") }
+            }
+            FilledTonalButton(onClick = { vm.playback.setSleepTimer(minutes); onDone() }) {
+                Text(if (active) "Restart timer" else "Start timer")
             }
         }
-        Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = onEndOfTrack, enabled = canStopAfterTrack && !atEndOfTrack) {
-            Text(if (atEndOfTrack) "Stopping after this track" else "Stop after this track")
-        }
+        OutlinedButton(
+            onClick = { vm.playback.sleepAtEndOfTrack(); onDone() },
+            enabled = canStopAfterTrack && !atEndOfTrack,
+        ) { Text("Stop after this track") }
         Text(
             when {
                 atEndOfTrack -> "Stops when the title changes, or after ${SleepTimer.END_OF_TRACK_CAP_MINUTES} min at most."
@@ -633,7 +634,6 @@ private fun SleepSheet(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
-            modifier = Modifier.padding(top = 6.dp),
         )
     }
 }

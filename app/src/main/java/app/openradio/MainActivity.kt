@@ -1,6 +1,7 @@
 package app.openradio
 
 import android.Manifest
+import android.app.NotificationManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -12,7 +13,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.core.content.getSystemService
 import androidx.lifecycle.ViewModelProvider
+import app.openradio.playback.RadioService
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.openradio.ui.AppRoot
@@ -64,6 +67,11 @@ class MainActivity : ComponentActivity() {
     private fun handleShortcutIntent(intent: Intent?, vm: AppViewModel) {
         when (intent?.action) {
             ACTION_LAST_STATION -> vm.requestOpenLastStationShortcut()
+            ACTION_OPEN_SLEEP_TIMER -> {
+                getSystemService<NotificationManager>()?.cancel(RadioService.SLEEP_SETUP_NOTIFICATION_ID)
+                vm.requestOpenSleepTimer()
+                setIntent(Intent(this, MainActivity::class.java))
+            }
             ACTION_PLAY_STATION -> {
                 val uri = intent.data
                 if (uri?.scheme == "nipperfm" && uri.authority == "station") {
@@ -80,6 +88,7 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        const val ACTION_OPEN_SLEEP_TIMER = "app.openradio.action.OPEN_SLEEP_TIMER"
         const val ACTION_PLAY_STATION = "app.openradio.action.PLAY_STATION"
         const val ACTION_LAST_STATION = "app.openradio.action.LAST_STATION"
         /** Plays the most recent station immediately (Assistant, dynamic shortcut). */

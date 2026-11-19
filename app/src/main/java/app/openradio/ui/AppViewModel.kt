@@ -156,6 +156,17 @@ class AppViewModel(private val container: AppContainer, initialPrefs: Appearance
         _messages.value = "Switched feed: ${feed.qualityBadge}"
     }
 
+    private val _pendingOpenSleepTimer = MutableStateFlow(false)
+    val pendingOpenSleepTimer = _pendingOpenSleepTimer.asStateFlow()
+
+    fun requestOpenSleepTimer() {
+        _pendingOpenSleepTimer.value = true
+    }
+
+    fun sleepTimerOpened() {
+        _pendingOpenSleepTimer.value = false
+    }
+
     private val _pendingOpenLastStation = MutableStateFlow(false)
     val pendingOpenLastStation: StateFlow<Boolean> = _pendingOpenLastStation.asStateFlow()
 

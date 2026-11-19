@@ -1,5 +1,8 @@
 package app.openradio.playback
 
+import android.app.ActivityOptions
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.media.AudioDeviceCallback
@@ -8,6 +11,7 @@ import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.os.Handler
@@ -15,7 +19,9 @@ import android.os.Looper
 import androidx.car.app.connection.CarConnection
 import androidx.lifecycle.Observer
 import androidx.annotation.OptIn
+import androidx.core.app.NotificationCompat
 import androidx.core.content.getSystemService
+import androidx.core.graphics.drawable.IconCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -38,6 +44,7 @@ import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.LibraryParams
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
+import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
@@ -57,7 +64,6 @@ import app.openradio.domain.PlaybackStatus
 import app.openradio.domain.PlaybackStatusRules
 import app.openradio.domain.RecoveryPhase
 import app.openradio.domain.ReconnectController
-import app.openradio.domain.SleepCycle
 import app.openradio.domain.SleepTimer
 import app.openradio.domain.Station
 import app.openradio.domain.StreamFeed
@@ -199,6 +205,13 @@ class RadioService : MediaLibraryService() {
         }
     }
 
+    private val sleepTimerIntent by lazy {
+        PendingIntent.getActivity(
+            this, 1, Intent(this, MainActivity::class.java).setAction(MainActivity.ACTION_OPEN_SLEEP_TIMER),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
+
     override fun onCreate() {
         super.onCreate()
 
@@ -273,6 +286,33 @@ class RadioService : MediaLibraryService() {
             .build()
         setMediaNotificationProvider(
             object : DefaultMediaNotificationProvider(this) {
+                override fun addNotificationActions(
+                    mediaSession: MediaSession,
+                    mediaButtons: ImmutableList<CommandButton>,
+                    builder: NotificationCompat.Builder,
+                    actionFactory: MediaNotification.ActionFactory,
+                ): IntArray {
+                    val actions = object : MediaNotification.ActionFactory by actionFactory {
+                        override fun createNotificationDismissalIntent(mediaSession: MediaSession): PendingIntent =
+                            actionFactory.createNotificationDismissalIntent(mediaSession)
+
+                        override fun createCustomActionFromCustomCommandButton(
+                            mediaSession: MediaSession,
+                            customCommandButton: CommandButton,
+                        ): NotificationCompat.Action {
+                            if (customCommandButton.sessionCommand?.customAction != SessionKeys.CMD_OPEN_SLEEP_TIMER) {
+                                return actionFactory.createCustomActionFromCustomCommandButton(mediaSession, customCommandButton)
+                            }
+                            return NotificationCompat.Action(
+                                IconCompat.createWithResource(this@RadioService, sleepTimerIcon()),
+                                sleepTimerLabel(),
+                                sleepTimerIntent,
+                            )
+                        }
+                    }
+                    return super.addNotificationActions(mediaSession, mediaButtons, builder, actions)
+                }
+
                 override fun getNotificationContentTitle(metadata: MediaMetadata): CharSequence? =
                     metadata.title ?: metadata.station ?: metadata.displayTitle
 
@@ -680,20 +720,22 @@ class RadioService : MediaLibraryService() {
                 .setSlots(CommandButton.SLOT_BACK, CommandButton.SLOT_OVERFLOW)
                 .build()
         }
-        val sleeping = sleepTimer.endsAtMs != null
         buttons += CommandButton.Builder(CommandButton.ICON_UNDEFINED)
-            .setCustomIconResId(if (sleeping) R.drawable.ic_sleep_on else R.drawable.ic_sleep_off)
-            .setDisplayName(
-                when {
-                    sleepTimer.endOfTrack -> "Sleep after this track (tap for 15 min)"
-                    sleeping -> "Sleep timer on (tap to extend or turn off)"
-                    else -> "Sleep timer (15 min)"
-                },
-            )
-            .setSessionCommand(SessionCommand(SessionKeys.CMD_SLEEP_CYCLE, Bundle.EMPTY))
+            .setCustomIconResId(sleepTimerIcon())
+            .setDisplayName(sleepTimerLabel())
+            .setSessionCommand(SessionCommand(SessionKeys.CMD_OPEN_SLEEP_TIMER, Bundle.EMPTY))
             .setSlots(CommandButton.SLOT_FORWARD, CommandButton.SLOT_OVERFLOW)
             .build()
         s.setMediaButtonPreferences(buttons)
+    }
+
+    private fun sleepTimerIcon() =
+        if (sleepTimer.endsAtMs != null) R.drawable.ic_sleep_on else R.drawable.ic_sleep_off
+
+    private fun sleepTimerLabel() = when {
+        sleepTimer.endOfTrack -> "Sleep after this track. Open sleep timer setup"
+        sleepTimer.endsAtMs != null -> "Sleep timer on. Open setup"
+        else -> "Sleep timer off. Open setup"
     }
 
     private fun logEvent(
@@ -747,6 +789,40 @@ class RadioService : MediaLibraryService() {
 
     // ---- media library / Android Auto -------------------------------------------------------
 
+    private fun canOpenSleepTimer(session: MediaSession, controller: MediaSession.ControllerInfo) =
+        session.isMediaNotificationController(controller) ||
+            (controller.isTrusted && controller.packageName == "com.android.systemui")
+
+    private fun openSleepTimer(): Int {
+        // MediaSession callbacks may run while Android disallows background activity launches.
+        // A notification tap can launch the activity directly in that case.
+        val notifications = getSystemService<NotificationManager>()
+        if (notifications?.areNotificationsEnabled() == true) {
+            notifications.createNotificationChannel(
+                NotificationChannel(SLEEP_SETUP_CHANNEL, "Sleep timer setup", NotificationManager.IMPORTANCE_LOW),
+            )
+            notifications.notify(
+                SLEEP_SETUP_NOTIFICATION_ID,
+                NotificationCompat.Builder(this, SLEEP_SETUP_CHANNEL)
+                    .setSmallIcon(sleepTimerIcon())
+                    .setContentTitle("Open sleep timer setup")
+                    .setContentIntent(sleepTimerIntent)
+                    .setAutoCancel(true)
+                    .setTimeoutAfter(30_000L)
+                    .build(),
+            )
+        }
+        return try {
+            val options = if (Build.VERSION.SDK_INT >= 34) ActivityOptions.makeBasic()
+                .setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                .toBundle() else null
+            sleepTimerIntent.send(this, 0, null, null, null, null, options)
+            SessionResult.RESULT_SUCCESS
+        } catch (_: PendingIntent.CanceledException) {
+            SessionError.ERROR_INVALID_STATE
+        }
+    }
+
     private inner class LibraryCallback : MediaLibrarySession.Callback {
 
         override fun onConnect(
@@ -759,13 +835,17 @@ class RadioService : MediaLibraryService() {
                 .add(SessionCommand(SessionKeys.CMD_MOBILE_OVERRIDE, Bundle.EMPTY))
                 .add(SessionCommand(SessionKeys.CMD_SELECT_FEED, Bundle.EMPTY))
                 .add(SessionCommand(SessionKeys.CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
-                .add(SessionCommand(SessionKeys.CMD_SLEEP_CYCLE, Bundle.EMPTY))
                 .add(SessionCommand(SessionKeys.CMD_SLEEP_END_OF_TRACK, Bundle.EMPTY))
                 .add(SessionCommand(SessionKeys.CMD_SET_VOLUME_TRIM, Bundle.EMPTY))
                 .build()
-            val available = if (controller.uid == applicationInfo.uid) {
-                commands.buildUpon().add(SessionCommand(SessionKeys.CMD_PLAY_ROUTINE, Bundle.EMPTY)).build()
-            } else commands
+            val available = commands.buildUpon().apply {
+                if (controller.uid == applicationInfo.uid) {
+                    add(SessionCommand(SessionKeys.CMD_PLAY_ROUTINE, Bundle.EMPTY))
+                }
+                if (canOpenSleepTimer(session, controller)) {
+                    add(SessionCommand(SessionKeys.CMD_OPEN_SLEEP_TIMER, Bundle.EMPTY))
+                }
+            }.build()
             // Connecting (including from the car) never starts audio.
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(available)
@@ -826,12 +906,10 @@ class RadioService : MediaLibraryService() {
                     scope.launch { repo.toggleFavorite(station) }
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                 }
-                SessionKeys.CMD_SLEEP_CYCLE -> {
-                    val remaining = if (sleepTimer.endOfTrack) 0L
-                    else (sleepTimer.endsAtMs ?: 0L) - System.currentTimeMillis()
-                    val next = SleepCycle.next(remaining)
-                    if (next > 0) sleepTimer.start(next) else sleepTimer.cancel()
-                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                SessionKeys.CMD_OPEN_SLEEP_TIMER -> {
+                    val result = if (canOpenSleepTimer(session, controller)) openSleepTimer()
+                    else SessionError.ERROR_PERMISSION_DENIED
+                    return Futures.immediateFuture(SessionResult(result))
                 }
                 SessionKeys.CMD_SLEEP_END_OF_TRACK -> {
                     val station = player.currentMediaItem?.toStation()
@@ -1190,6 +1268,8 @@ class RadioService : MediaLibraryService() {
     }
 
     companion object {
+        internal const val SLEEP_SETUP_NOTIFICATION_ID = 8703
+        private const val SLEEP_SETUP_CHANNEL = "sleep_timer_setup"
         private const val STALE_PAUSE_MS = 30_000L
         private const val USAGE_FLUSH_MS = 30_000L
         private const val CAR_LIST_SIZE = 40

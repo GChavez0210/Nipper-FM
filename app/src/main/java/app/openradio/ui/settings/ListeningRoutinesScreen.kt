@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -53,7 +52,7 @@ import java.util.UUID
 private const val NEW_ROUTINE = "new"
 
 @Composable
-internal fun ListeningRoutinesScreen(onBack: () -> Unit) {
+internal fun ListeningRoutinesSettings(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val store = remember { ListeningRoutines(context.applicationContext) }
     val repo = (context.applicationContext as RadioApp).container.stations
@@ -76,11 +75,9 @@ internal fun ListeningRoutinesScreen(onBack: () -> Unit) {
     }
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        TextButton(onClick = onBack) { Text("Back to settings") }
-        Text("Scheduled listening", style = MaterialTheme.typography.headlineSmall)
         Text("Tune in automatically on selected days. Wake-up routines start quietly and use your alarm sound if the stream fails.")
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
