@@ -27,7 +27,11 @@ jobs:
           java-version: "25"
 
       # Installs the SDK and accepts licenses so AGP can fetch the compileSdk platform it needs.
+      # The action's default package list includes the removed legacy "tools" package.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
 
       - uses: gradle/actions/setup-gradle@v4
         with:
