@@ -99,11 +99,11 @@ import kotlinx.coroutines.delay
 /** Sleep dial stops in minutes; 0 = timer off. */
 private val SLEEP_STEPS = listOf(0, 15, 30, 45, 60, 90)
 
-private enum class NowPlayingMenu { Signal, OnAir, Source, Trim }
+private enum class NowPlayingMenu { Signal, OnAir, Source, Trim, Equalizer, Shortcut }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
+fun NowPlayingScreen(vm: AppViewModel, onClose: (() -> Unit)?) {
     val ui by vm.playback.state.collectAsState()
     val favoriteIds by vm.favoriteIds.collectAsState()
     val onAirHistory by vm.onAirHistory.collectAsState()
@@ -114,11 +114,12 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
     var showOnAir by remember { mutableStateOf(false) }
     var showFeeds by remember { mutableStateOf(false) }
     var showTrim by remember { mutableStateOf(false) }
+    var showEq by remember(station?.id) { mutableStateOf(false) }
     val alternateFeeds by vm.alternateFeeds.collectAsState()
 
     if (station == null) {
         // Nothing selected (e.g. the session ended): go back rather than show an empty screen.
-        LaunchedEffect(Unit) { onClose() }
+        LaunchedEffect(Unit) { onClose?.invoke() }
         return
     }
 
@@ -130,7 +131,7 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp),
     ) {
-        Row(
+        if (onClose != null) Row(
             Modifier.fillMaxWidth().padding(top = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -295,6 +296,8 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
                         "Track history & bookmarks",
                         Icons.Filled.History,
                     ),
+                    NeuMenuOption("Station equalizer", NowPlayingMenu.Equalizer, "Apply a preset when tuning", Icons.Filled.GraphicEq),
+                    NeuMenuOption("Add to home screen", NowPlayingMenu.Shortcut, "Create a station shortcut", Icons.Filled.Tune),
                     NeuMenuOption("Stream source", NowPlayingMenu.Source, "Alternate feeds, codec & bitrate", Icons.Filled.Tune),
                     NeuMenuOption(
                         "Volume trim",
@@ -312,6 +315,12 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
                             showFeeds = true
                         }
                         NowPlayingMenu.Trim -> showTrim = true
+                        NowPlayingMenu.Equalizer -> showEq = true
+                        NowPlayingMenu.Shortcut -> {
+                            if (!app.openradio.ShortcutPublisher.pinStation(context, station)) {
+                                android.widget.Toast.makeText(context, "This launcher could not pin the shortcut", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     }
                 },
             )
@@ -341,6 +350,23 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: () -> Unit) {
                 onAddFifteen = { vm.playback.addSleepMinutes(15); showSleep = false },
                 onEndOfTrack = { vm.playback.sleepAtEndOfTrack(); showSleep = false },
             )
+        }
+    }
+    if (showEq) {
+        val stationEq = remember(station.id) { vm.stationEq(station.id) }
+        val preset by stationEq.collectAsState(initial = null)
+        val globalPrefs by vm.playbackPrefs.collectAsState()
+        ModalBottomSheet(onDismissRequest = { showEq = false }) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp)) {
+                Text("Equalizer for ${station.name}", style = MaterialTheme.typography.titleLarge)
+                app.openradio.ui.settings.EqualizerPresetPicker(
+                    preset ?: globalPrefs.eqPreset,
+                    onSelect = { vm.setStationEq(station.id, it) },
+                )
+                TextButton(onClick = { vm.setStationEq(station.id, null) }, enabled = preset != null) {
+                    Text(if (preset == null) "Using global preset" else "Use global preset")
+                }
+            }
         }
     }
     if (showTrim) {
@@ -779,9 +805,12 @@ private fun LiveSeekControls(vm: AppViewModel) {
             Text("Live window ${formatMinutes(p.windowMs)}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
-            OutlinedButton(onClick = { vm.playback.seekBack() }) { Text("−15s") }
-            FilledTonalButton(onClick = vm.playback::jumpToLive, enabled = !p.atLiveEdge) { Text("Live") }
-            OutlinedButton(onClick = { vm.playback.seekForward() }) { Text("+30s") }
+            OutlinedButton(onClick = { vm.playback.seekBack(30_000) }, enabled = p.positionMs > 0L) {
+                Text(if (p.positionMs >= 30_000L) "Back 30 seconds" else "Back to start")
+            }
+            FilledTonalButton(onClick = vm.playback::jumpToLive, enabled = !p.atLiveEdge) {
+                Text("Go live")
+            }
         }
     }
 }

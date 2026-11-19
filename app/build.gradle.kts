@@ -5,6 +5,19 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val releaseSigning = listOf(
+    "NIPPERFM_KEYSTORE",
+    "NIPPERFM_STORE_PASSWORD",
+    "NIPPERFM_KEY_ALIAS",
+    "NIPPERFM_KEY_PASSWORD",
+).associateWith { providers.environmentVariable(it).orNull }
+val hasReleaseSigning = releaseSigning.values.any { it != null }
+if (hasReleaseSigning) {
+    require(releaseSigning.values.all { !it.isNullOrBlank() }) {
+        "Set all four NIPPERFM signing environment variables."
+    }
+}
+
 android {
     namespace = "app.openradio"
     compileSdk = 37
@@ -15,10 +28,21 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    if (hasReleaseSigning) {
+        signingConfigs.create("distribution") {
+            storeFile = rootProject.file(releaseSigning.getValue("NIPPERFM_KEYSTORE")!!)
+            storePassword = releaseSigning.getValue("NIPPERFM_STORE_PASSWORD")
+            keyAlias = releaseSigning.getValue("NIPPERFM_KEY_ALIAS")
+            keyPassword = releaseSigning.getValue("NIPPERFM_KEY_PASSWORD")
+        }
     }
 
     buildTypes {
         release {
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("distribution")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -81,6 +105,12 @@ dependencies {
 
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
+
+    implementation(libs.androidx.car.app)
+
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.okhttp.mockwebserver)
+    androidTestImplementation(libs.junit)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

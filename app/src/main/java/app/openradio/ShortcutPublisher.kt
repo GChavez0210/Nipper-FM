@@ -2,6 +2,7 @@ package app.openradio
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -14,6 +15,20 @@ import app.openradio.domain.Station
  */
 object ShortcutPublisher {
     private const val ID = "play_recent_dynamic"
+
+    fun pinStation(context: Context, station: Station): Boolean = runCatching {
+        val intent = Intent(context, MainActivity::class.java)
+            .setAction(MainActivity.ACTION_PLAY_STATION)
+            .setData(Uri.Builder().scheme("nipperfm").authority("station").appendPath(station.id).build())
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val shortcut = ShortcutInfoCompat.Builder(context, "station:${station.id}")
+            .setShortLabel(station.name.take(SHORT_LABEL_MAX).ifBlank { "Station" })
+            .setLongLabel("Play ${station.name}".take(LONG_LABEL_MAX))
+            .setIcon(IconCompat.createWithResource(context, R.mipmap.ic_launcher))
+            .setIntent(intent)
+            .build()
+        ShortcutManagerCompat.requestPinShortcut(context, shortcut, null)
+    }.getOrDefault(false)
 
     fun reportPlayed(context: Context, station: Station) {
         runCatching {

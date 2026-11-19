@@ -5,6 +5,10 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,6 +58,7 @@ import app.openradio.ui.explore.ExploreScreen
 import app.openradio.ui.favorites.FavoritesScreen
 import app.openradio.ui.nowplaying.NowPlayingScreen
 import app.openradio.ui.settings.SettingsScreen
+import app.openradio.ui.settings.ListeningRoutinesScreen
 import androidx.compose.material3.Surface
 import app.openradio.ui.theme.neuInset
 import app.openradio.ui.theme.neuRaised
@@ -63,6 +68,7 @@ private object Routes {
     const val HOME = "home"
     const val NOW_PLAYING = "now_playing"
     const val SETTINGS = "settings"
+    const val LISTENING_ROUTINES = "listening_routines"
 }
 
 @Composable
@@ -93,7 +99,10 @@ fun AppRoot(vm: AppViewModel) {
                 exitTransition = { androidx.compose.animation.fadeOut() },
                 popExitTransition = { slideOutVertically { it } },
             ) { NowPlayingScreen(vm, onClose = { nav.popBackStack() }) }
-            composable(Routes.SETTINGS) { SettingsScreen(vm, onBack = { nav.popBackStack() }) }
+            composable(Routes.SETTINGS) {
+                SettingsScreen(vm, onBack = { nav.popBackStack() }, onOpenRoutines = { nav.navigate(Routes.LISTENING_ROUTINES) })
+            }
+            composable(Routes.LISTENING_ROUTINES) { ListeningRoutinesScreen(onBack = { nav.popBackStack() }) }
         }
     }
 }
@@ -113,56 +122,62 @@ private fun HomeScreen(vm: AppViewModel, onOpenNowPlaying: () -> Unit, onOpenSet
         }
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbar) },
-        bottomBar = {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                if (ui.station != null) {
-                    MiniPlayer(vm, onOpenNowPlaying)
-                    Spacer(Modifier.height(10.dp))
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val twoPane = maxWidth >= 600.dp
+        val openPlayer = if (twoPane) ({}) else onOpenNowPlaying
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            snackbarHost = { SnackbarHost(snackbar) },
+            bottomBar = {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    if (!twoPane && ui.station != null) {
+                        MiniPlayer(vm, onOpenNowPlaying)
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .neuRaised(shape = RoundedCornerShape(26.dp), elevation = 6.dp)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        NeuNavTab(
+                            selected = tab == 0,
+                            label = "Explore",
+                            icon = if (tab == 0) Icons.Filled.Explore else Icons.Outlined.Explore,
+                            onClick = { tab = 0 },
+                            modifier = Modifier.weight(1f),
+                        )
+                        NeuNavTab(
+                            selected = tab == 1,
+                            label = "Favorites",
+                            icon = if (tab == 1) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                            onClick = { tab = 1 },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .neuRaised(shape = RoundedCornerShape(26.dp), elevation = 6.dp)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    NeuNavTab(
-                        selected = tab == 0,
-                        label = "Explore",
-                        icon = if (tab == 0) Icons.Filled.Explore else Icons.Outlined.Explore,
-                        onClick = { tab = 0 },
-                        modifier = Modifier.weight(1f),
-                    )
-                    NeuNavTab(
-                        selected = tab == 1,
-                        label = "Favorites",
-                        icon = if (tab == 1) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                        onClick = { tab = 1 },
-                        modifier = Modifier.weight(1f),
-                    )
+            },
+        ) { padding ->
+            Row(Modifier.fillMaxSize().padding(padding)) {
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    if (tab == 0) {
+                        ExploreScreen(vm, ui.station?.id, onOpenSettings, openPlayer)
+                    } else {
+                        FavoritesScreen(vm, ui.station?.id, openPlayer)
+                    }
+                }
+                if (twoPane) {
+                    VerticalDivider()
+                    Box(Modifier.weight(0.9f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                        if (ui.station == null) {
+                            Text("Choose a station to start listening")
+                        } else {
+                            NowPlayingScreen(vm, onClose = null)
+                        }
+                    }
                 }
             }
-        },
-    ) { padding ->
-        val currentId = ui.station?.id
-        if (tab == 0) {
-            ExploreScreen(
-                vm = vm,
-                currentStationId = currentId,
-                onOpenSettings = onOpenSettings,
-                onOpenNowPlaying = onOpenNowPlaying,
-                modifier = Modifier.padding(padding),
-            )
-        } else {
-            FavoritesScreen(
-                vm = vm,
-                currentStationId = currentId,
-                onOpenNowPlaying = onOpenNowPlaying,
-                modifier = Modifier.padding(padding),
-            )
         }
     }
 }

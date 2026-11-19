@@ -21,6 +21,11 @@ class PreferencesRepository(private val context: Context) {
     private val themeKey = stringPreferencesKey("theme_mode")
     private val darkKey = stringPreferencesKey("dark_style")
     private val accentKey = stringPreferencesKey("accent")
+    private val resumeHeadsetKey = booleanPreferencesKey("resume_headset")
+    val resumeHeadset: Flow<Boolean> = context.dataStore.data.map { it[resumeHeadsetKey] ?: false }
+
+    suspend fun setResumeHeadset(enabled: Boolean) = context.dataStore.edit { it[resumeHeadsetKey] = enabled }
+
     private val wifiOnlyKey = booleanPreferencesKey("wifi_only")
     private val bufferProfileKey = stringPreferencesKey("buffer_profile")
     private val eqPresetKey = stringPreferencesKey("eq_preset")
@@ -43,6 +48,17 @@ class PreferencesRepository(private val context: Context) {
             spatialAudio = p[spatialAudioKey] ?: false,
             loudnessNorm = p[loudnessNormKey] ?: false,
         )
+    }
+
+    private fun stationEqKey(id: String) = stringPreferencesKey("station_eq:$id")
+
+    fun stationEq(id: String): Flow<EqPreset?> = context.dataStore.data.map { prefs ->
+        EqPreset.entries.firstOrNull { it.name == prefs[stationEqKey(id)] }
+    }
+
+    suspend fun setStationEq(id: String, preset: EqPreset?) = context.dataStore.edit { prefs ->
+        val key = stationEqKey(id)
+        if (preset == null) prefs.remove(key) else prefs[key] = preset.name
     }
 
     suspend fun setThemeMode(mode: ThemeMode) = context.dataStore.edit { it[themeKey] = mode.name }

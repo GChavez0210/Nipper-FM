@@ -179,6 +179,25 @@ class AppViewModel(private val container: AppContainer, initialPrefs: Appearance
 
     fun play(station: Station) = playback.play(station)
 
+    fun playStationShortcut(stationId: String) {
+        viewModelScope.launch {
+            val station = repo.resolveForPlayback(stationId)
+            if (station != null) play(station) else _messages.value = "Station unavailable."
+        }
+    }
+
+    val resumeHeadset get() = container.preferences.resumeHeadset
+
+    fun setResumeHeadset(enabled: Boolean) {
+        viewModelScope.launch { container.preferences.setResumeHeadset(enabled) }
+    }
+
+    fun stationEq(stationId: String) = container.preferences.stationEq(stationId)
+
+    fun setStationEq(stationId: String, preset: EqPreset?) {
+        viewModelScope.launch { container.preferences.setStationEq(stationId, preset) }
+    }
+
     /** Starts the most recent station (or first preset) right away, e.g. from Assistant. */
     fun playLastStationNow() {
         viewModelScope.launch {

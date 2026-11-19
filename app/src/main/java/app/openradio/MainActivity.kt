@@ -64,6 +64,13 @@ class MainActivity : ComponentActivity() {
     private fun handleShortcutIntent(intent: Intent?, vm: AppViewModel) {
         when (intent?.action) {
             ACTION_LAST_STATION -> vm.requestOpenLastStationShortcut()
+            ACTION_PLAY_STATION -> {
+                val uri = intent.data
+                if (uri?.scheme == "nipperfm" && uri.authority == "station") {
+                    uri.pathSegments.singleOrNull()?.let(vm::playStationShortcut)
+                }
+                setIntent(Intent(this, MainActivity::class.java))
+            }
             ACTION_PLAY_LAST_STATION -> {
                 vm.playLastStationNow()
                 // Don't replay on rotation / process recreation.
@@ -73,6 +80,7 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        const val ACTION_PLAY_STATION = "app.openradio.action.PLAY_STATION"
         const val ACTION_LAST_STATION = "app.openradio.action.LAST_STATION"
         /** Plays the most recent station immediately (Assistant, dynamic shortcut). */
         const val ACTION_PLAY_LAST_STATION = "app.openradio.action.PLAY_LAST_STATION"

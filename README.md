@@ -44,6 +44,7 @@ With multiple devices attached, use `adb devices -l` and specify the serial with
 
 - Some broadcasters serve plain HTTP. The app accepts those direct stream URLs and uses HTTPS for Radio Browser.
 - EQ and spatial audio depend on the device's audio effects. The loudness toggle applies a fixed makeup gain. The spectrum is hidden when live FFT capture is unavailable, and this build does not request microphone access.
-- The release build uses R8. Signing and distribution setup are pending.
+- Build the R8 release APK and app bundle with `./gradlew :app:assembleRelease :app:bundleRelease`. Set `NIPPERFM_KEYSTORE`, `NIPPERFM_STORE_PASSWORD`, `NIPPERFM_KEY_ALIAS`, and `NIPPERFM_KEY_PASSWORD` in the build environment to sign both artifacts with your distribution key. Omit all four variables for an unsigned source build. [F-Droid inclusion requirements](https://f-droid.org/docs/Inclusion_Policy/)
+- Scheduled listening uses Android's Alarms & reminders access. Wake-up fallback also requires notifications so it can show a Stop action. Routines skip when another station is playing or Android Auto is connected.
 - Sideloaded builds appear in Android Auto only after enabling **Unknown sources** in Android Auto's developer settings.
 - CI runs unit tests and lint on every push. Hardware and in-car verification is tracked in the local `ROADMAP.md`.

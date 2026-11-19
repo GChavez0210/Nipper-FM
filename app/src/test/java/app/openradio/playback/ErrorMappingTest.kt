@@ -25,14 +25,12 @@ class ErrorMappingTest {
     }
 
     @Test fun seekableLiveWindowExcludesHlsHoldbackBuffer() {
-        // Non-DVR 5-segment HLS stream (.norewind.m3u8): 32s total manifest, ~14s behind live edge (< 30s)
-        val noRewindWindow = PlaybackConnection.seekableLiveWindowMs(durationMs = 32_000L, defaultPositionMs = 14_000L)
-        assertEquals(14_000L, noRewindWindow)
-        org.junit.Assert.assertFalse(noRewindWindow >= PlaybackConnection.MIN_LIVE_WINDOW_MS)
+        // A short seekable window still supports rewinding to its start.
+        val shortWindow = PlaybackConnection.seekableLiveWindowMs(durationMs = 32_000L, defaultPositionMs = 14_000L)
+        assertEquals(14_000L, shortWindow)
 
-        // DVR 50-segment HLS stream (RTL): 288s total manifest, ~268s behind live edge (>= 30s)
         val dvrWindow = PlaybackConnection.seekableLiveWindowMs(durationMs = 288_000L, defaultPositionMs = 268_000L)
         assertEquals(268_000L, dvrWindow)
-        org.junit.Assert.assertTrue(dvrWindow >= PlaybackConnection.MIN_LIVE_WINDOW_MS)
+        assertEquals(0L, PlaybackConnection.seekableLiveWindowMs(durationMs = 32_000L, defaultPositionMs = 0L))
     }
 }
