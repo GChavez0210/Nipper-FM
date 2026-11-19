@@ -58,7 +58,10 @@ import app.openradio.ShortcutPublisher
 import app.openradio.tile.LastStationTileService
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.delay
+import app.openradio.domain.CountryNames
+import app.openradio.domain.GenreCatalog
 import app.openradio.domain.VoiceMatch
+import app.openradio.domain.VoiceRequestParser
 import app.openradio.domain.VolumeTrim
 import app.openradio.widget.RadioWidgetProvider
 import com.google.common.collect.ImmutableList
@@ -105,6 +108,10 @@ class RadioService : MediaLibraryService() {
     private val triedUrlsForCurrent = HashSet<String>()
 
     private var favoriteIds: Set<String> = emptySet()
+
+    /** User's country for the car's Countries folder; looked up once per service lifetime. */
+    private var detectedCountry: String? = null
+    private var countryLookedUp = false
     /** Player volume = per-station trim (cuts only) × sleep fade-out. */
     private var trimDb = 0
     private var fadeVolume = 1f
@@ -763,11 +770,35 @@ class RadioService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = scope.future {
-            val items: List<MediaItem> = when (parentId) {
-                MediaIds.ROOT -> listOf(folder(MediaIds.PRESETS, "Presets"), folder(MediaIds.RECENTS, "Recents"))
-                MediaIds.PRESETS -> repo.carPresetsNow().map { it.toMediaItem(playable = false) }
-                MediaIds.RECENTS -> repo.recentsNow().map { it.toMediaItem(playable = false) }
-                MediaIds.RECENT_ROOT -> repo.recentsNow().take(1).map { it.toMediaItem(playable = false) }
+            val country = MediaIds.countryCode(parentId)
+            val tag = MediaIds.genreTag(parentId)
+            val items: List<MediaItem> = when {
+                parentId == MediaIds.ROOT -> listOf(
+                    folder(MediaIds.PRESETS, "Presets"),
+                    folder(MediaIds.RECENTS, "Recents"),
+                    folder(MediaIds.COUNTRIES, "Countries"),
+                    folder(MediaIds.GENRES, "Genres & moods"),
+                )
+                parentId == MediaIds.PRESETS -> repo.carPresetsNow().map { it.toMediaItem(playable = false) }
+                parentId == MediaIds.RECENTS -> repo.recentsNow().map { it.toMediaItem(playable = false) }
+                parentId == MediaIds.RECENT_ROOT -> repo.recentsNow().take(1).map { it.toMediaItem(playable = false) }
+                parentId == MediaIds.COUNTRIES -> carCountryCodes().map {
+                    folder(MediaIds.country(it), CountryNames.displayName(it))
+                }
+                parentId == MediaIds.GENRES -> (GenreCatalog.MOODS + GenreCatalog.GENRES)
+                    .distinctBy { it.tag }
+                    .map { folder(MediaIds.genre(it.tag), it.label) }
+                country != null || tag != null -> {
+                    val stations = try {
+                        categoryStations(tag, country)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // Nothing cached yet and the directory is unreachable.
+                        return@future LibraryResult.ofError(SessionError.ERROR_IO)
+                    }
+                    stations.map { it.toMediaItem(playable = false) }
+                }
                 else -> return@future LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
             }
             LibraryResult.ofItemList(paged(items, page, pageSize), params)
@@ -779,7 +810,7 @@ class RadioService : MediaLibraryService() {
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> = scope.future {
             val id = MediaIds.stationId(mediaId)
-            val station = id?.let { repo.resolveForPlayback(it) }
+            val station = id?.let { repo.localStation(it) ?: container.carCache.findStation(it) ?: repo.resolveForPlayback(it) }
             if (station == null) LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
             else LibraryResult.ofItem(station.toMediaItem(playable = false), null)
         }
@@ -790,7 +821,7 @@ class RadioService : MediaLibraryService() {
             query: String,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<Void>> = scope.future {
-            val count = searchStations(query).size
+            val count = voiceCandidates(query).size
             session.notifySearchResultChanged(browser, query, count, params)
             LibraryResult.ofVoid()
         }
@@ -803,7 +834,7 @@ class RadioService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = scope.future {
-            val items = searchStations(query).map { it.toMediaItem(playable = false) }
+            val items = voiceCandidates(query).map { it.toMediaItem(playable = false) }
             LibraryResult.ofItemList(paged(items, page, pageSize), params)
         }
 
@@ -822,19 +853,22 @@ class RadioService : MediaLibraryService() {
 
             val resolved = resolveRequest(requested)
                 ?: throw IllegalArgumentException("Station not found: ${requested.mediaId}")
-            val station = preferKnownGoodUrl(resolved)
+            val station = preferKnownGoodUrl(resolved.station)
             reconnect.onStationChanged(MediaIds.station(station.id))
 
-            // Starting from a preset, recent or favorite queues that whole list so next/previous
-            // work on the lock screen, the notification and in the car.
+            // Queue the list the station came from so next/previous work on the lock screen,
+            // the notification and in the car: a voice genre/country request, presets, recents,
+            // favorites, or a car Countries/Genres folder.
             val presets = repo.carPresetsNow()
             val recents = repo.recentsNow()
             val favorites = repo.favoritesNow().map { it.station }
+            val voiceQueue = resolved.queue?.takeIf { q -> q.any { it.id == station.id } }
             val list = when {
+                voiceQueue != null -> voiceQueue
                 presets.any { it.id == station.id } -> presets
                 recents.any { it.id == station.id } -> recents
                 favorites.any { it.id == station.id } -> favorites
-                else -> listOf(station)
+                else -> container.carCache.listContaining(station.id) ?: listOf(station)
             }
             val index = list.indexOfFirst { it.id == station.id }.coerceAtLeast(0)
             val items = list.mapIndexed { i, s ->
@@ -849,7 +883,7 @@ class RadioService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
             mediaItems: List<MediaItem>,
         ): ListenableFuture<MutableList<MediaItem>> = scope.future {
-            mediaItems.mapNotNull { resolveRequest(it)?.toMediaItem(playable = true) }.toMutableList()
+            mediaItems.mapNotNull { resolveRequest(it)?.station?.toMediaItem(playable = true) }.toMutableList()
         }
 
         /** Lets a host resume the last station; the host decides whether to actually play. */
@@ -864,30 +898,103 @@ class RadioService : MediaLibraryService() {
         }
     }
 
+    /** A resolved request; [queue] is set when the request named a list (genre, country, presets). */
+    private data class Resolution(val station: Station, val queue: List<Station>? = null)
+
     /**
      * Turns a controller's request into a station: by stable id (cached URL first, so it works
      * during a directory outage) or by spoken search query.
      */
-    private suspend fun resolveRequest(item: MediaItem): Station? {
+    private suspend fun resolveRequest(item: MediaItem): Resolution? {
         MediaIds.stationId(item.mediaId)?.let { id ->
             // A full record with a URI comes from a fresh directory result: prefer and remember it.
             if (item.localConfiguration != null) {
                 item.toStation()?.let { fresh ->
                     repo.rememberStreamUrl(fresh.id, fresh.streamUrl)
-                    return fresh
+                    return Resolution(fresh)
                 }
             }
-            // Otherwise use the cached record, which keeps working during a directory outage.
-            return repo.localStation(id) ?: repo.resolveForPlayback(id)
+            // Otherwise use a cached record, which keeps working during a directory outage.
+            val station = repo.localStation(id) ?: container.carCache.findStation(id) ?: repo.resolveForPlayback(id)
+            return station?.let { Resolution(it) }
         }
-        val query = item.requestMetadata.searchQuery
-        if (query != null) {
-            if (VoiceMatch.cleanQuery(query).isEmpty()) {
-                return repo.carPresetsNow().firstOrNull() ?: repo.recentsNow().firstOrNull()
-            }
-            return searchStations(query).let { VoiceMatch.best(query, it) ?: it.firstOrNull() }
+        val query = item.requestMetadata.searchQuery ?: return null
+        return resolveVoice(query)
+    }
+
+    /**
+     * Spoken requests, in order: a bare "play" resumes presets or recents; a favorite named like
+     * the whole request; a genre, mood or country ("some jazz", "radio from Mexico"); otherwise a
+     * station search, matched fuzzily.
+     */
+    private suspend fun resolveVoice(query: String): Resolution? {
+        if (VoiceMatch.cleanQuery(query).isEmpty()) {
+            val presets = repo.carPresetsNow()
+            presets.firstOrNull()?.let { return Resolution(it, presets) }
+            val recents = repo.recentsNow()
+            return recents.firstOrNull()?.let { Resolution(it, recents) }
         }
-        return null
+        // "Made in Germany Radio" or "Jazz" saved as favorites should not turn into a category.
+        val favorites = repo.favoritesNow().map { it.station }
+        VoiceMatch.bestScored(query, favorites)
+            ?.takeIf { it.score >= VoiceMatch.STRONG_SCORE }
+            ?.let { return Resolution(it.station, favorites) }
+
+        val intent = VoiceRequestParser.parse(query)
+        if (intent.isCategory) {
+            val list = voiceCategory(intent.tag, intent.countryCode)
+            list.firstOrNull()?.let { return Resolution(it, list) }
+        }
+        val stationQuery = intent.stationQuery ?: query
+        val results = searchStations(stationQuery, intent.countryCode)
+        val pick = VoiceMatch.best(stationQuery, results) ?: results.firstOrNull() ?: return null
+        return Resolution(pick)
+    }
+
+    /** Search results for the car's search screen: category lists or matching stations. */
+    private suspend fun voiceCandidates(query: String): List<Station> {
+        val intent = VoiceRequestParser.parse(query)
+        return if (intent.isCategory) {
+            voiceCategory(intent.tag, intent.countryCode)
+        } else {
+            searchStations(intent.stationQuery ?: query, intent.countryCode)
+        }
+    }
+
+    /** Favorites in the category first (the user's taste), then the directory's popular stations. */
+    private suspend fun voiceCategory(tag: String?, countryCode: String?): List<Station> {
+        val normTag = tag?.let(VoiceMatch::normalize)
+        val saved = repo.favoritesNow().map { it.station }.filter { s ->
+            (normTag == null || s.tags.any { VoiceMatch.normalize(it) == normTag }) &&
+                (countryCode == null || s.countryCode.equals(countryCode, ignoreCase = true))
+        }
+        val remote = runCatching { categoryStations(tag, countryCode) }.getOrDefault(emptyList())
+        return (saved + remote).distinctBy { it.id }
+    }
+
+    /** Cached directory list for a genre tag and/or country (see [app.openradio.data.CarBrowseCache]). */
+    private suspend fun categoryStations(tag: String?, countryCode: String?): List<Station> =
+        container.carCache.stations("cat:${tag.orEmpty()}:${countryCode.orEmpty()}") {
+            repo.directoryCategory(tag, countryCode, CAR_LIST_SIZE)
+        }
+
+    /** The user's country, countries of their favorites, then the directory's most-played. */
+    private suspend fun carCountryCodes(): List<String> {
+        if (!countryLookedUp) {
+            countryLookedUp = true
+            detectedCountry = runCatching { container.countryLocator.detectCountryCode() }.getOrNull()
+        }
+        val fromFavorites = repo.favoritesNow()
+            .mapNotNull { it.station.countryCode?.uppercase()?.takeIf { c -> c.length == 2 } }
+            .groupingBy { it }.eachCount()
+            .entries.sortedByDescending { it.value }.take(3).map { it.key }
+        val popular = runCatching {
+            container.carCache.codes("popular_countries") { repo.popularCountryCodes() }
+        }.getOrDefault(emptyList())
+        return (listOfNotNull(detectedCountry) + fromFavorites + popular)
+            .map { it.uppercase() }
+            .distinct()
+            .take(MAX_CAR_COUNTRIES)
     }
 
     /** Swaps in a URL that worked before when the station's usual URL failed recently. */
@@ -899,14 +1006,30 @@ class RadioService : MediaLibraryService() {
         return station.copy(streamUrl = url, isHls = url.contains(".m3u8", ignoreCase = true))
     }
 
-    /** Favorites first (exact matches win), then the directory. */
-    private suspend fun searchStations(rawQuery: String): List<Station> {
+    /**
+     * Favorites first (best matches first, misspellings tolerated), then the directory. When the
+     * directory finds nothing for a misheard name, its longest word is searched and ranked fuzzily.
+     */
+    private suspend fun searchStations(rawQuery: String, countryCode: String? = null): List<Station> {
         val q = VoiceMatch.cleanQuery(rawQuery).ifEmpty { rawQuery }
-        val saved = repo.searchFavorites(q)
-        val exactSaved = VoiceMatch.best(rawQuery, repo.favoritesNow().map { it.station })
-        val local = listOfNotNull(exactSaved) + saved
-        val remote = if (exactSaved == null) repo.searchDirectory(q) else emptyList()
-        return (local + remote).distinctBy { it.id }
+        val favorites = repo.favoritesNow().map { it.station }
+        val saved = favorites
+            .map { it to VoiceMatch.score(q, it.name) }
+            .filter { it.second >= VoiceMatch.MIN_SCORE }
+            .sortedByDescending { it.second }
+            .map { it.first }
+        val strongSaved = saved.firstOrNull()?.takeIf { VoiceMatch.score(q, it.name) >= VoiceMatch.STRONG_SCORE }
+        val remote = if (strongSaved != null) {
+            emptyList()
+        } else {
+            repo.searchDirectory(q, countryCode, limit = 15).ifEmpty {
+                val keyword = q.split(' ').filter { it.length >= 4 }.maxByOrNull { it.length }?.takeIf { it != q }
+                keyword?.let { repo.searchDirectory(it, countryCode, limit = 30) }.orEmpty()
+                    .filter { VoiceMatch.score(q, it.name) >= VoiceMatch.MIN_SCORE }
+                    .sortedByDescending { VoiceMatch.score(q, it.name) }
+            }
+        }
+        return (saved + remote).distinctBy { it.id }
     }
 
     private fun folder(id: String, title: String) = MediaItem.Builder()
@@ -929,6 +1052,8 @@ class RadioService : MediaLibraryService() {
     companion object {
         private const val STALE_PAUSE_MS = 30_000L
         private const val USAGE_FLUSH_MS = 30_000L
+        private const val CAR_LIST_SIZE = 40
+        private const val MAX_CAR_COUNTRIES = 12
 
         // Android Auto content-style hints (androidx.media.utils.MediaConstants values).
         private const val CONTENT_STYLE_PLAYABLE_HINT = "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT"

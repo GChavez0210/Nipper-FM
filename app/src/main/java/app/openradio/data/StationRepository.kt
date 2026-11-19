@@ -237,8 +237,14 @@ class StationRepository(
         if (!stationId.startsWith("custom:")) directory.registerClick(stationId)
     }
 
-    suspend fun searchDirectory(query: String): List<Station> =
-        runCatching { directory.searchExpanded(query, null, null, 0, 5) }.getOrDefault(emptyList())
+    suspend fun searchDirectory(query: String, countryCode: String? = null, limit: Int = 5): List<Station> =
+        runCatching { directory.searchExpanded(query, countryCode, null, 0, limit) }.getOrDefault(emptyList())
+
+    /** Directory stations for a genre tag and/or country, most popular first. Throws on network errors. */
+    suspend fun directoryCategory(tag: String?, countryCode: String?, limit: Int): List<Station> =
+        directory.search(null, countryCode, tag, 0, limit)
+
+    suspend fun popularCountryCodes(): List<String> = directory.popularCountryCodes()
 
     // ---- Recently On Air (Track Metadata History & Bookmarks) -------------------------------
 

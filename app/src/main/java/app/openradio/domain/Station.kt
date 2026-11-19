@@ -1,6 +1,9 @@
 package app.openradio.domain
 
+import kotlinx.serialization.Serializable
+
 /** A radio station as stored locally and passed to the player. [id] is the Radio Browser stationuuid. */
+@Serializable
 data class Station(
     val id: String,
     val name: String,

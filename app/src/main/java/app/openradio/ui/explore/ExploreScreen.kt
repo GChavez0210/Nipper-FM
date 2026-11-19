@@ -52,6 +52,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
 import app.openradio.domain.Country
+import app.openradio.domain.GenreCatalog
 import app.openradio.domain.MoodCollection
 import app.openradio.ui.AppViewModel
 import app.openradio.ui.components.CompactNeuSearchField
@@ -66,46 +67,8 @@ import app.openradio.ui.theme.neuRaised
 
 private enum class DiscoverAction { SurpriseMe, CustomStream }
 
-private val genres = listOf(
-    "Pop" to "pop",
-    "Rock" to "rock",
-    "Hip Hop" to "hip hop",
-    "Top 40" to "top 40",
-    "Dance" to "dance",
-    "Electronic" to "electronic",
-    "R&B" to "r&b",
-    "Rap" to "rap",
-    "Country" to "country",
-    "Jazz" to "jazz",
-    "Classical" to "classical",
-    "K-Pop" to "k-pop",
-    "Latin" to "latin",
-    "Reggaeton" to "reggaeton",
-    "Salsa" to "salsa",
-    "Afrobeats" to "afrobeats",
-    "Reggae" to "reggae",
-    "Soul" to "soul",
-    "Gospel" to "gospel",
-    "Blues" to "blues",
-    "Folk" to "folk",
-    "Indie" to "indie",
-    "Alternative" to "alternative",
-    "Metal" to "metal",
-    "Punk" to "punk",
-    "House" to "house",
-    "Techno" to "techno",
-    "Trance" to "trance",
-    "Ambient" to "ambient",
-    "Lo-Fi" to "lofi",
-    "Disco" to "disco",
-    "Funk" to "funk",
-    "Oldies" to "oldies",
-    "J-Pop" to "j-pop",
-    "Bollywood" to "bollywood",
-    "News" to "news",
-    "Talk" to "talk",
-    "Sports" to "sports",
-)
+/** Shared with Android Auto's Genres folder and voice requests. */
+private val genres = GenreCatalog.GENRES.map { it.label to it.tag }
 
 @Composable
 fun ExploreScreen(

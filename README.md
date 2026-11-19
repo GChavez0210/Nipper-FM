@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="branding/nipper-fm-dog-logo.png" alt="Nipper FM logo" width="280">
+</p>
+
 # Nipper FM
 
 Nipper FM is a native Android internet radio app. It finds stations through [Radio Browser](https://www.radio-browser.info/), plays streams directly from broadcasters, and shares one Media3 playback session across the phone, lock screen, home-screen widget, and Android Auto. Listening requires no account. The app inserts no ads.

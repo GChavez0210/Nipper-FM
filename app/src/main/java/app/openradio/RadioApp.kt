@@ -2,6 +2,7 @@ package app.openradio
 
 import android.app.Application
 import androidx.room.Room
+import app.openradio.data.CarBrowseCache
 import app.openradio.data.CountryLocator
 import app.openradio.data.PlaybackErrorLog
 import app.openradio.data.UsageRepository
@@ -30,6 +31,7 @@ class AppContainer(app: Application) {
     val countryLocator = CountryLocator(app)
     val errorLog = PlaybackErrorLog(app)
     val usage = UsageRepository(app)
+    val carCache = CarBrowseCache(app.cacheDir)
 }
 
 class RadioApp : Application() {
