@@ -52,3 +52,13 @@ With multiple devices attached, use `adb devices -l` and specify the serial with
 - Scheduled listening uses Android's Alarms & reminders access. Wake-up fallback also requires notifications so it can show a Stop action. Routines skip when another station is playing or Android Auto is connected.
 - Sideloaded builds appear in Android Auto only after enabling **Unknown sources** in Android Auto's developer settings.
 - CI runs unit tests and lint on every push. Hardware and in-car verification is tracked in the local `ROADMAP.md`.
+
+## Support Nipper FM
+
+<p align="center">
+  <a href="https://buymeacoffee.com/gchavez0210">
+    <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" width="220">
+  </a>
+</p>
+
+Your support helps fund ongoing development and testing.
