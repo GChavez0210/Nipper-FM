@@ -8,6 +8,8 @@ import app.openradio.domain.BackupCodec
 import app.openradio.domain.BackupPayload
 import app.openradio.domain.BackupPreviewSummary
 import app.openradio.domain.BufferProfile
+import app.openradio.domain.CarPrefs
+import app.openradio.domain.WheelStart
 import app.openradio.domain.Country
 import app.openradio.domain.CustomStreamBuilder
 import app.openradio.domain.EqPreset
@@ -380,4 +382,10 @@ class AppViewModel(private val container: AppContainer, initialPrefs: Appearance
     fun setEqPreset(preset: EqPreset) { viewModelScope.launch { container.preferences.setEqPreset(preset) } }
     fun setSpatialAudio(enabled: Boolean) { viewModelScope.launch { container.preferences.setSpatialAudio(enabled) } }
     fun setLoudnessNorm(enabled: Boolean) { viewModelScope.launch { container.preferences.setLoudnessNorm(enabled) } }
+    fun setTrackArtwork(enabled: Boolean) { viewModelScope.launch { container.preferences.setTrackArtwork(enabled) } }
+
+    val carPrefs: StateFlow<CarPrefs> =
+        container.preferences.carPrefs.stateIn(viewModelScope, SharingStarted.Eagerly, CarPrefs())
+    fun setCarTiles(enabled: Boolean) { viewModelScope.launch { container.preferences.setCarTiles(enabled) } }
+    fun setWheelStart(start: WheelStart) { viewModelScope.launch { container.preferences.setWheelStart(start) } }
 }

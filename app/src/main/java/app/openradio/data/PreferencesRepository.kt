@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import app.openradio.domain.BufferProfile
+import app.openradio.domain.CarPrefs
+import app.openradio.domain.WheelStart
 import app.openradio.domain.EqPreset
 import app.openradio.domain.PlaybackPrefs
 import app.openradio.ui.theme.Accent
@@ -31,6 +33,16 @@ class PreferencesRepository(private val context: Context) {
     private val eqPresetKey = stringPreferencesKey("eq_preset")
     private val spatialAudioKey = booleanPreferencesKey("spatial_audio")
     private val loudnessNormKey = booleanPreferencesKey("loudness_norm")
+    private val trackArtworkKey = booleanPreferencesKey("track_artwork")
+    private val carTilesKey = booleanPreferencesKey("car_tiles")
+    private val wheelStartKey = stringPreferencesKey("wheel_start")
+
+    val carPrefs: Flow<CarPrefs> = context.dataStore.data.map { p ->
+        CarPrefs(tiles = p[carTilesKey] ?: true, wheelStart = WheelStart.fromKey(p[wheelStartKey]))
+    }
+
+    suspend fun setCarTiles(enabled: Boolean) = context.dataStore.edit { it[carTilesKey] = enabled }
+    suspend fun setWheelStart(start: WheelStart) = context.dataStore.edit { it[wheelStartKey] = start.key }
 
     val appearance: Flow<AppearancePrefs> = context.dataStore.data.map { p ->
         AppearancePrefs(
@@ -47,6 +59,7 @@ class PreferencesRepository(private val context: Context) {
             eqPreset = p[eqPresetKey].toEnum(EqPreset.Flat),
             spatialAudio = p[spatialAudioKey] ?: false,
             loudnessNorm = p[loudnessNormKey] ?: false,
+            trackArtwork = p[trackArtworkKey] ?: true,
         )
     }
 
@@ -70,6 +83,7 @@ class PreferencesRepository(private val context: Context) {
     suspend fun setEqPreset(preset: EqPreset) = context.dataStore.edit { it[eqPresetKey] = preset.name }
     suspend fun setSpatialAudio(enabled: Boolean) = context.dataStore.edit { it[spatialAudioKey] = enabled }
     suspend fun setLoudnessNorm(enabled: Boolean) = context.dataStore.edit { it[loudnessNormKey] = enabled }
+    suspend fun setTrackArtwork(enabled: Boolean) = context.dataStore.edit { it[trackArtworkKey] = enabled }
 
     private inline fun <reified T : Enum<T>> String?.toEnum(default: T): T =
         enumValues<T>().firstOrNull { it.name == this } ?: default

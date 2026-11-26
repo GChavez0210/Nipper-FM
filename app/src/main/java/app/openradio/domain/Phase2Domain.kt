@@ -79,6 +79,8 @@ data class PlaybackPrefs(
     val eqPreset: EqPreset = EqPreset.Flat,
     val spatialAudio: Boolean = false,
     val loudnessNorm: Boolean = false,
+    /** Look up cover art for songs named in stream metadata (iTunes Search API). */
+    val trackArtwork: Boolean = true,
 )
 
 /**

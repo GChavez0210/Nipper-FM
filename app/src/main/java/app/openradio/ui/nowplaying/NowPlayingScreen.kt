@@ -87,7 +87,7 @@ import app.openradio.ui.components.NeuDropdownSelector
 import app.openradio.ui.components.NeuMenuOption
 import androidx.compose.runtime.saveable.rememberSaveable
 import app.openradio.ui.components.PlayPauseButton
-import app.openradio.ui.components.StationCover
+import app.openradio.ui.components.TrackCover
 import app.openradio.ui.components.StatusChip
 import app.openradio.ui.theme.neuInset
 import app.openradio.ui.theme.neuRaised
@@ -151,8 +151,9 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: (() -> Unit)?) {
             modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            StationCover(
+            TrackCover(
                 station = station,
+                artworkUrl = ui.trackArtworkUrl,
                 modifier = Modifier.widthIn(max = 300.dp).fillMaxWidth(),
             )
             Spacer(Modifier.height(16.dp))
@@ -175,11 +176,19 @@ fun NowPlayingScreen(vm: AppViewModel, onClose: (() -> Unit)?) {
             ui.trackTitle?.let { track ->
                 Spacer(Modifier.height(14.dp))
                 Text(
-                    track,
+                    ui.trackSong ?: track,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center,
                 )
+                ui.trackArtist?.let { artist ->
+                    Text(
+                        artist,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 val currentBookmark = onAirHistory.firstOrNull {
                     it.stationId == station.id && it.trackTitle.equals(track, ignoreCase = true) && it.isBookmarked

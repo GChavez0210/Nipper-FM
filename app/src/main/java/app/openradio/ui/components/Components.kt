@@ -61,6 +61,25 @@ import app.openradio.ui.theme.neuRaised
 import coil3.compose.SubcomposeAsyncImage
 import coil3.compose.SubcomposeAsyncImageContent
 
+/** The current song's cover art, falling back to the station logo while it loads or when it fails. */
+@Composable
+fun TrackCover(station: Station, artworkUrl: String?, modifier: Modifier = Modifier) {
+    if (artworkUrl.isNullOrBlank()) {
+        StationCover(station, modifier)
+        return
+    }
+    Box(modifier.aspectRatio(1f).clip(RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+        SubcomposeAsyncImage(
+            model = artworkUrl,
+            contentDescription = "Album artwork",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+            loading = { StationCover(station, Modifier.fillMaxSize()) },
+            error = { StationCover(station, Modifier.fillMaxSize()) },
+        )
+    }
+}
+
 @Composable
 fun StationCover(station: Station, modifier: Modifier = Modifier) {
     Box(

@@ -16,18 +16,33 @@ object MediaIds {
     const val RECENT_ROOT = "recent_root"
     const val COUNTRIES = "countries"
     const val GENRES = "genres"
+    const val PLAYLISTS = "playlists"
+    const val BROWSE = "browse"
+    const val ALL_FAVORITES = "playlist_all"
     private const val STATION_PREFIX = "station:"
+    private const val PLAYLIST_PREFIX = "playlist:"
+    private const val SOURCE_SEPARATOR = '|'
     private const val COUNTRY_PREFIX = "country:"
     private const val GENRE_PREFIX = "genre:"
 
     fun station(uuid: String) = STATION_PREFIX + uuid
-    fun stationId(mediaId: String): String? = mediaId.takeIf { it.startsWith(STATION_PREFIX) }?.removePrefix(STATION_PREFIX)
+    fun stationId(mediaId: String): String? =
+        mediaId.takeIf { it.startsWith(STATION_PREFIX) }?.removePrefix(STATION_PREFIX)?.substringBefore(SOURCE_SEPARATOR)
+
+    /** A station browsed inside [folderId]; playing it queues that folder's stations. */
+    fun stationIn(uuid: String, folderId: String) = station(uuid) + SOURCE_SEPARATOR + folderId
+    fun sourceFolder(mediaId: String): String? =
+        mediaId.takeIf { it.startsWith(STATION_PREFIX) }?.substringAfter(SOURCE_SEPARATOR, "")?.takeIf { it.isNotEmpty() }
 
     fun country(code: String) = COUNTRY_PREFIX + code.uppercase()
     fun countryCode(mediaId: String): String? = mediaId.takeIf { it.startsWith(COUNTRY_PREFIX) }?.removePrefix(COUNTRY_PREFIX)
 
     fun genre(tag: String) = GENRE_PREFIX + tag
     fun genreTag(mediaId: String): String? = mediaId.takeIf { it.startsWith(GENRE_PREFIX) }?.removePrefix(GENRE_PREFIX)
+
+    /** A Collection shown as an Android Auto playlist. */
+    fun playlist(name: String) = PLAYLIST_PREFIX + name
+    fun playlistName(mediaId: String): String? = mediaId.takeIf { it.startsWith(PLAYLIST_PREFIX) }?.removePrefix(PLAYLIST_PREFIX)
 }
 
 /** Keys for session extras (service -> controllers) and custom commands (controllers -> service). */
@@ -77,7 +92,7 @@ private const val X_LAT = "x_lat"
 private const val X_LON = "x_lon"
 
 /** Builds a media item. [playable] adds the stream URI so a player can load it; browse items omit it. */
-fun Station.toMediaItem(playable: Boolean): MediaItem {
+fun Station.toMediaItem(playable: Boolean, sourceFolder: String? = null): MediaItem {
     val extras = bundleOf(
         X_URL to streamUrl, X_COUNTRY to country, X_CC to countryCode, X_STATE to state,
         X_TAGS to tags.joinToString(","), X_CODEC to codec, X_BITRATE to bitrate, X_HLS to isHls,
@@ -99,7 +114,8 @@ fun Station.toMediaItem(playable: Boolean): MediaItem {
         .setMediaType(MediaMetadata.MEDIA_TYPE_RADIO_STATION)
         .setExtras(extras)
         .build()
-    val builder = MediaItem.Builder().setMediaId(MediaIds.station(id)).setMediaMetadata(metadata)
+    val builder = MediaItem.Builder()
+        .setMediaId(sourceFolder?.let { MediaIds.stationIn(id, it) } ?: MediaIds.station(id)).setMediaMetadata(metadata)
     if (playable) {
         builder.setUri(streamUrl)
         if (isHls || streamUrl.contains(".m3u8", ignoreCase = true)) builder.setMimeType(MimeTypes.APPLICATION_M3U8)

@@ -53,7 +53,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import app.openradio.domain.PlaybackStatus
 import app.openradio.ui.components.PlayPauseButton
-import app.openradio.ui.components.StationArt
+import app.openradio.ui.components.TrackCover
 import app.openradio.ui.explore.ExploreScreen
 import app.openradio.ui.favorites.FavoritesScreen
 import app.openradio.ui.nowplaying.NowPlayingScreen
@@ -268,11 +268,16 @@ private fun MiniPlayer(vm: AppViewModel, onClick: () -> Unit) {
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        StationArt(station, 46.dp)
+        TrackCover(station, ui.trackArtworkUrl, Modifier.size(46.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(station.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val sub = listOfNotNull(station.state ?: station.country, statusText.takeIf { it.isNotEmpty() }).joinToString(" • ")
+            // While live, the song on air is more useful than the station's location.
+            val sub = if (ui.trackTitle != null && ui.status == PlaybackStatus.Live) {
+                ui.trackTitle.orEmpty()
+            } else {
+                listOfNotNull(station.state ?: station.country, statusText.takeIf { it.isNotEmpty() }).joinToString(" • ")
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     sub,

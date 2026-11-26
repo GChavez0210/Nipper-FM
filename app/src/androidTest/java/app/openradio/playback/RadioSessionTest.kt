@@ -41,10 +41,10 @@ class RadioSessionTest {
     private val token = SessionToken(app, ComponentName(app, RadioService::class.java))
 
     @Test
-    fun browseRootExposesPresetsRecentsCountriesAndGenres() = withBrowser { browser ->
+    fun browseRootExposesPresetsPlaylistsRecentsAndBrowse() = withBrowser { browser ->
         assertEquals(MediaIds.ROOT, browser.getLibraryRoot(null).await().value?.mediaId)
         val children = browser.getChildren(MediaIds.ROOT, 0, 20, null).await().value.orEmpty()
-        assertEquals(listOf(MediaIds.PRESETS, MediaIds.RECENTS, MediaIds.COUNTRIES, MediaIds.GENRES), children.map { it.mediaId })
+        assertEquals(listOf(MediaIds.PRESETS, MediaIds.PLAYLISTS, MediaIds.RECENTS, MediaIds.BROWSE), children.map { it.mediaId })
         assertFalse(browser.playWhenReady)
     }
 
@@ -65,6 +65,32 @@ class RadioSessionTest {
             browser.play()
             awaitPlaying(browser)
             assertEquals(MediaIds.station(station.id), browser.currentMediaItem?.mediaId)
+        }
+    }
+
+    @Test
+    fun icyTitleSplitsIntoArtistSongAndStreamCover() = withBrowser { browser ->
+        withServer { server ->
+            val station = station(server)
+            val cover = "http://127.0.0.1:${server.port}/cover.jpg"
+            val stream = icyStream(wav(), "StreamTitle='Test Artist - Test Song';StreamUrl='$cover';")
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) =
+                    MockResponse().setHeader("Content-Type", "audio/wav").setHeader("icy-metaint", ICY_METAINT)
+                        .setBody(Buffer().write(stream))
+            }
+            browser.setMediaItem(station.toMediaItem(playable = true))
+            browser.prepare()
+            browser.play()
+            awaitPlaying(browser)
+            withTimeout(15_000) {
+                while (browser.mediaMetadata.artworkUri?.toString() != cover) delay(25)
+            }
+            assertEquals("Test Song", browser.mediaMetadata.title?.toString())
+            assertEquals("Test Artist", browser.mediaMetadata.artist?.toString())
+            // The queued station keeps its own identity and logo.
+            assertEquals("Test station", browser.currentMediaItem?.mediaMetadata?.station?.toString())
+            assertEquals(null, browser.currentMediaItem?.mediaMetadata?.artworkUri)
         }
     }
 
@@ -213,6 +239,34 @@ class RadioSessionTest {
 
     private fun audioResponse(audio: ByteArray) =
         MockResponse().setHeader("Content-Type", "audio/wav").setBody(Buffer().write(audio))
+
+    /** Interleaves one ICY metadata block after the first [ICY_METAINT] bytes, then empty blocks. */
+    private fun icyStream(audio: ByteArray, metadata: String): ByteArray {
+        val interval = ICY_METAINT.toInt()
+        val meta = metadata.toByteArray()
+        val blocks = (meta.size + 15) / 16
+        val out = java.io.ByteArrayOutputStream()
+        var offset = 0
+        var first = true
+        while (offset < audio.size) {
+            val n = minOf(interval, audio.size - offset)
+            out.write(audio, offset, n)
+            offset += n
+            if (n < interval) break
+            if (first) {
+                out.write(blocks)
+                out.write(meta.copyOf(blocks * 16))
+                first = false
+            } else {
+                out.write(0)
+            }
+        }
+        return out.toByteArray()
+    }
+
+    private companion object {
+        const val ICY_METAINT = "16000"
+    }
 
     private fun wav(): ByteArray {
         val bytes = 8_000 * 2 * 30
