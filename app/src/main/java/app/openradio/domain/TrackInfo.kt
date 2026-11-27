@@ -47,26 +47,58 @@ object TrackInfoParser {
 data class ArtworkCandidate(val artist: String, val title: String, val artworkUrl: String)
 
 object ArtworkMatcher {
+    private val decorationBrackets = Regex("[(\\[].*?[)\\]]")
+    private val trailingFeat = Regex("\\s+(?:feat\\.?|ft\\.?|featuring)\\s+.*$", RegexOption.IGNORE_CASE)
+    private val trailingEdition = Regex(
+        "\\s+[-–—]\\s+.*?(?:remaster|live|edit|version|mix|mono|stereo|acoustic|single|demo|bonus|radio|extended|deluxe|original|instrumental|album).*$",
+        RegexOption.IGNORE_CASE,
+    )
+    private val artistSplit = Regex("\\s*(?:,|&|/|\\b(?:feat\\.?|ft\\.?|featuring|and|with)\\b)\\s*", RegexOption.IGNORE_CASE)
+    private val combiningMarks = Regex("\\p{M}+")
+
     /**
-     * Picks the first candidate whose artist and title both match the track loosely, so a
-     * search for a little-known song doesn't show an unrelated album cover.
+     * Picks the first candidate whose artist and title both match the track, preferring an exact
+     * match over a collaborator-split match, so a search for a little-known song doesn't show an
+     * unrelated album cover.
      */
     fun pick(track: TrackInfo, candidates: List<ArtworkCandidate>): ArtworkCandidate? {
-        val artist = VoiceMatch.normalize(track.artist ?: return null)
-        val title = VoiceMatch.normalize(stripDecorations(track.title))
+        val rawArtist = track.artist ?: return null
+        val artist = normalizeArtist(rawArtist)
+        val artistParts = splitArtists(rawArtist)
+        val title = normalizeTitle(track.title)
         if (artist.isEmpty() || title.isEmpty()) return null
-        return candidates.firstOrNull { c ->
-            looselyEqual(artist, VoiceMatch.normalize(c.artist)) &&
-                looselyEqual(title, VoiceMatch.normalize(stripDecorations(c.title)))
+
+        var loose: ArtworkCandidate? = null
+        for (c in candidates) {
+            if (normalizeTitle(c.title) != title) continue
+            val candArtist = normalizeArtist(c.artist)
+            if (candArtist.isEmpty()) continue
+            if (candArtist == artist) return c
+            if (loose == null) {
+                val candParts = splitArtists(c.artist)
+                if (artistParts.any { it in candParts }) loose = c
+            }
         }
+        return loose
     }
 
     /** iTunes returns 100 px artwork; the same URL serves larger sizes. */
     fun upscale(url: String, px: Int = 600): String = url.replace(Regex("/\\d+x\\d+bb\\."), "/${px}x${px}bb.")
 
-    // "Song (Radio Edit)" and "Song [feat. X]" should still match "Song".
-    private fun stripDecorations(s: String): String = s.replace(Regex("[(\\[].*?[)\\]]"), " ").trim()
+    private fun fold(s: String): String =
+        VoiceMatch.normalize(java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD).replace(combiningMarks, ""))
 
-    private fun looselyEqual(a: String, b: String): Boolean =
-        a.isNotEmpty() && b.isNotEmpty() && (a == b || a.contains(b) || b.contains(a))
+    private fun normalizeArtist(s: String): String =
+        fold(s).removePrefix("the ").trim()
+
+    private fun splitArtists(s: String): Set<String> =
+        artistSplit.split(s).map(::normalizeArtist).filter { it.isNotEmpty() }.toSet()
+
+    // "Song (Radio Edit)", "Song [feat. X]", and "Song - 2013 Remaster" should still match "Song".
+    private fun normalizeTitle(s: String): String = fold(
+        s.replace(decorationBrackets, " ")
+            .replace(trailingFeat, "")
+            .replace(trailingEdition, "")
+            .trim(),
+    )
 }

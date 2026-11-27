@@ -11,11 +11,21 @@ class TrackInfoTest {
         assertEquals(TrackInfo("Volare", "Domenico Modugno"), TrackInfoParser.parse("Domenico Modugno - Volare", null, "Radio X"))
     }
 
+    @Test fun splitsEnDashAndNonAsciiItalianCharacters() {
+        val enDash = TrackInfoParser.parse("Fabrizio De André – La città vecchia", null, "Radio Italia")!!
+        assertEquals(TrackInfo("La città vecchia", "Fabrizio De André"), enDash)
+        assertEquals("Fabrizio De André - La città vecchia", enDash.display)
+        assertTrue(enDash.isSong)
+
+        val accented = TrackInfoParser.parse("Niccolò Fabi - È non è", null, "Radio Italia")!!
+        assertEquals(TrackInfo("È non è", "Niccolò Fabi"), accented)
+    }
+
     @Test fun splitsOnFirstSeparatorOnly() {
-        val t = TrackInfoParser.parse("Artist - Song - Remix", null, null)!!
-        assertEquals("Artist", t.artist)
-        assertEquals("Song - Remix", t.title)
-        assertEquals("Artist - Song - Remix", t.display)
+        val t = TrackInfoParser.parse("A - B - C", null, null)!!
+        assertEquals("A", t.artist)
+        assertEquals("B - C", t.title)
+        assertEquals("A - B - C", t.display)
     }
 
     @Test fun keepsSeparateId3Fields() {
@@ -33,6 +43,7 @@ class TrackInfoTest {
     @Test fun ignoresStationNameAndBlank() {
         assertNull(TrackInfoParser.parse("radio x", null, "Radio X"))
         assertNull(TrackInfoParser.parse("  ", null, "Radio X"))
+        assertNull(TrackInfoParser.parse("", null, "Radio X"))
         assertNull(TrackInfoParser.parse(null, "Artist", "Radio X"))
     }
 
@@ -52,10 +63,57 @@ class TrackInfoTest {
         assertNull(ArtworkMatcher.pick(TrackInfo("Volare"), listOf(exact)))
     }
 
-    @Test fun matcherToleratesFeaturing() {
+    @Test fun matcherRejectsSubstringFalsePositives() {
+        // Real iTunes result for non-existent "Sting - Rain" is "Sting - After the Rain Has Fallen".
+        assertNull(
+            ArtworkMatcher.pick(
+                TrackInfo("Rain", "Sting"),
+                listOf(
+                    ArtworkCandidate("Sting", "After the Rain Has Fallen", "u1"),
+                    ArtworkCandidate("Casting Crowns", "Brain Damage", "u2"),
+                ),
+            ),
+        )
+        assertNull(
+            ArtworkMatcher.pick(
+                TrackInfo("Love", "Queen"),
+                listOf(ArtworkCandidate("Queen", "Somebody to Love", "u")),
+            ),
+        )
+        assertNull(
+            ArtworkMatcher.pick(
+                TrackInfo("Try", "Pink"),
+                listOf(ArtworkCandidate("Pink Floyd", "Try", "u")),
+            ),
+        )
+        assertNull(
+            ArtworkMatcher.pick(
+                TrackInfo("One", "Drake"),
+                listOf(ArtworkCandidate("Nick Drake", "One", "u")),
+            ),
+        )
+    }
+
+    @Test fun matcherFoldsDiacriticsAndStripsEditions() {
+        val accented = ArtworkCandidate("Fabrizio De André", "La Città Vecchia", "u1")
+        assertEquals(accented, ArtworkMatcher.pick(TrackInfo("La citta vecchia", "Fabrizio De Andre"), listOf(accented)))
+
+        val remaster = ArtworkCandidate("Eagles", "Hotel California - 2013 Remaster", "u2")
+        assertEquals(remaster, ArtworkMatcher.pick(TrackInfo("Hotel California", "Eagles"), listOf(remaster)))
+
+        val beatles = ArtworkCandidate("The Beatles", "Yesterday", "u3")
+        assertEquals(beatles, ArtworkMatcher.pick(TrackInfo("Yesterday", "Beatles"), listOf(beatles)))
+    }
+
+    @Test fun matcherToleratesFeaturingAndPrefersExactArtist() {
         val track = TrackInfo("Song", "Main feat. Guest")
         val c = ArtworkCandidate("Main", "Song [feat. Guest]", "u")
         assertEquals(c, ArtworkMatcher.pick(track, listOf(c)))
+
+        val collab = ArtworkCandidate("Queen & David Bowie", "Under Pressure", "u1")
+        val exact = ArtworkCandidate("Queen", "Under Pressure", "u2")
+        assertEquals(exact, ArtworkMatcher.pick(TrackInfo("Under Pressure", "Queen"), listOf(collab, exact)))
+        assertEquals(collab, ArtworkMatcher.pick(TrackInfo("Under Pressure", "Queen"), listOf(collab)))
     }
 
     @Test fun upscalesItunesArtwork() {
