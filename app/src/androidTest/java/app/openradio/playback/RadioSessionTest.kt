@@ -8,7 +8,9 @@ import android.os.Bundle
 import android.os.PowerManager
 import androidx.core.content.getSystemService
 import androidx.annotation.OptIn
+import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaBrowser
 import androidx.media3.session.MediaLibraryService.LibraryParams
 import androidx.media3.session.SessionCommand
@@ -18,11 +20,13 @@ import androidx.test.platform.app.InstrumentationRegistry
 import app.openradio.RadioApp
 import app.openradio.data.remote.TrackArtworkClient
 import app.openradio.domain.Station
+import app.openradio.domain.WheelStart
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import java.time.DayOfWeek
 import org.junit.Assume.assumeTrue
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -513,6 +517,254 @@ class RadioSessionTest {
         }
     }
 
+    @Test
+    fun carBrowseTilesToggleAndLivePlaylistUpdates() {
+        val changed = CopyOnWriteArrayList<Pair<String, Int>>()
+        val listener = object : MediaBrowser.Listener {
+            override fun onChildrenChanged(
+                browser: MediaBrowser,
+                parentId: String,
+                itemCount: Int,
+                params: LibraryParams?,
+            ) {
+                changed += parentId to itemCount
+            }
+        }
+        withBrowser(listener) { browser ->
+            withServer { server ->
+                val audio = wav(seconds = 4)
+                server.dispatcher = object : Dispatcher() {
+                    override fun dispatch(request: RecordedRequest) = audioResponse(audio)
+                }
+                val originalCarPrefs = app.container.preferences.carPrefs.first()
+                val s1 = station(server).copy(name = "Alpha Jazz", countryCode = "IT")
+                val s2 = station(server).copy(name = "Beta Rock", countryCode = "US")
+                val s3 = station(server).copy(name = "Gamma Jazz", countryCode = "IT")
+                val emptyGroup = "Empty-${UUID.randomUUID().toString().take(6)}"
+                val jazzGroup = "Jazz-${UUID.randomUUID().toString().take(6)}"
+                val rockGroup = "Rock-${UUID.randomUUID().toString().take(6)}"
+                try {
+                    app.container.preferences.setCarTiles(true)
+                    app.container.stations.createGroup(emptyGroup)
+                    app.container.stations.setFavorite(s1, true, jazzGroup)
+                    app.container.stations.setFavorite(s2, true, rockGroup)
+                    app.container.stations.setFavorite(s3, true, jazzGroup)
+                    app.container.stations.pin(s1.id)
+                    app.container.stations.pin(s2.id)
+
+                    // Browse tab holds Countries and Genres & moods, and both load non-empty lists.
+                    val browseChildren = browser.getChildren(MediaIds.BROWSE, 0, 20, null).await().value.orEmpty()
+                    assertEquals(listOf(MediaIds.COUNTRIES, MediaIds.GENRES), browseChildren.map { it.mediaId })
+                    assertTrue(browser.getChildren(MediaIds.COUNTRIES, 0, 20, null).await().value.orEmpty().isNotEmpty())
+                    assertTrue(browser.getChildren(MediaIds.GENRES, 0, 20, null).await().value.orEmpty().isNotEmpty())
+
+                    // Subscribe to folders to verify live notifications without reconnecting.
+                    browser.subscribe(MediaIds.ROOT, null).await()
+                    browser.subscribe(MediaIds.PRESETS, null).await()
+                    browser.subscribe(MediaIds.PLAYLISTS, null).await()
+                    browser.subscribe(MediaIds.ALL_FAVORITES, null).await()
+                    browser.subscribe(MediaIds.playlist(jazzGroup), null).await()
+                    browser.subscribe(MediaIds.playlist(rockGroup), null).await()
+
+                    // Tiles ON: Presets, All favorites, and each Collection request grid style (2).
+                    val rootOn = browser.getChildren(MediaIds.ROOT, 0, 20, null).await().value.orEmpty()
+                    val presetsFolderOn = rootOn.first { it.mediaId == MediaIds.PRESETS }
+                    assertEquals(2, presetsFolderOn.mediaMetadata.extras?.getInt(CONTENT_STYLE_PLAYABLE_HINT))
+
+                    val playlistsOn = browser.getChildren(MediaIds.PLAYLISTS, 0, 50, null).await().value.orEmpty()
+                    val playlistIds = playlistsOn.map { it.mediaId }
+                    assertTrue(MediaIds.ALL_FAVORITES in playlistIds)
+                    assertTrue(MediaIds.playlist(jazzGroup) in playlistIds)
+                    assertTrue(MediaIds.playlist(rockGroup) in playlistIds)
+                    assertFalse(MediaIds.playlist(emptyGroup) in playlistIds)
+                    assertEquals(2, playlistsOn.first { it.mediaId == MediaIds.ALL_FAVORITES }.mediaMetadata.extras?.getInt(CONTENT_STYLE_PLAYABLE_HINT))
+                    assertEquals(2, playlistsOn.first { it.mediaId == MediaIds.playlist(jazzGroup) }.mediaMetadata.extras?.getInt(CONTENT_STYLE_PLAYABLE_HINT))
+
+                    // Toggle Tiles OFF: live notification fires without reconnecting and style switches to rows.
+                    changed.clear()
+                    app.container.preferences.setCarTiles(false)
+                    withTimeout(5_000) {
+                        while (changed.none { it.first == MediaIds.ROOT } || changed.none { it.first == MediaIds.PLAYLISTS }) delay(25)
+                    }
+                    val rootOff = browser.getChildren(MediaIds.ROOT, 0, 20, null).await().value.orEmpty()
+                    assertNull(rootOff.first { it.mediaId == MediaIds.PRESETS }.mediaMetadata.extras)
+                    val playlistsOff = browser.getChildren(MediaIds.PLAYLISTS, 0, 50, null).await().value.orEmpty()
+                    assertNull(playlistsOff.first { it.mediaId == MediaIds.ALL_FAVORITES }.mediaMetadata.extras)
+                    assertNull(playlistsOff.first { it.mediaId == MediaIds.playlist(jazzGroup) }.mediaMetadata.extras)
+
+                    // Picking s1 inside Jazz queues Jazz ([s3, s1]) and next/prev stay within it.
+                    val jazzItems = browser.getChildren(MediaIds.playlist(jazzGroup), 0, 20, null).await().value.orEmpty()
+                    assertEquals(2, jazzItems.size)
+                    browser.setMediaItem(jazzItems.first { MediaIds.stationId(it.mediaId) == s1.id })
+                    browser.prepare()
+                    browser.play()
+                    awaitPlaying(browser)
+                    assertEquals(2, browser.mediaItemCount)
+                    assertEquals(setOf(MediaIds.station(s1.id), MediaIds.station(s3.id)), (0 until browser.mediaItemCount).map { browser.getMediaItemAt(it).mediaId }.toSet())
+                    assertEquals(MediaIds.station(s1.id), browser.currentMediaItem?.mediaId)
+                    if (browser.hasNextMediaItem()) {
+                        browser.seekToNextMediaItem()
+                        withTimeout(5_000) { while (browser.currentMediaItem?.mediaId != MediaIds.station(s3.id)) delay(20) }
+                        browser.seekToPreviousMediaItem()
+                        withTimeout(5_000) { while (browser.currentMediaItem?.mediaId != MediaIds.station(s1.id)) delay(20) }
+                    } else {
+                        browser.seekToPreviousMediaItem()
+                        withTimeout(5_000) { while (browser.currentMediaItem?.mediaId != MediaIds.station(s3.id)) delay(20) }
+                        browser.seekToNextMediaItem()
+                        withTimeout(5_000) { while (browser.currentMediaItem?.mediaId != MediaIds.station(s1.id)) delay(20) }
+                    }
+
+                    // Picking the SAME station s1 from Presets queues Presets ([s1, s2]).
+                    val presetItems = browser.getChildren(MediaIds.PRESETS, 0, 20, null).await().value.orEmpty()
+                    browser.setMediaItem(presetItems.first { MediaIds.stationId(it.mediaId) == s1.id })
+                    browser.prepare()
+                    browser.play()
+                    withTimeout(5_000) {
+                        while ((0 until browser.mediaItemCount).map { browser.getMediaItemAt(it).mediaId } != listOf(MediaIds.station(s1.id), MediaIds.station(s2.id))) {
+                            delay(25)
+                        }
+                    }
+                    awaitPlaying(browser)
+                    assertEquals(listOf(MediaIds.station(s1.id), MediaIds.station(s2.id)), (0 until browser.mediaItemCount).map { browser.getMediaItemAt(it).mediaId })
+                    browser.seekToNextMediaItem()
+                    withTimeout(5_000) { while (browser.currentMediaItem?.mediaId != MediaIds.station(s2.id)) delay(20) }
+
+                    // Regrouping s2 out of Rock empties Rock: car gets notified and Rock disappears.
+                    changed.clear()
+                    app.container.stations.setStationGroup(s2.id, jazzGroup)
+                    withTimeout(5_000) {
+                        while (changed.none { it.first == MediaIds.PLAYLISTS } || changed.none { it.first == MediaIds.playlist(rockGroup) && it.second == 0 }) {
+                            delay(25)
+                        }
+                    }
+                    val playlistsAfterRegroup = browser.getChildren(MediaIds.PLAYLISTS, 0, 50, null).await().value.orEmpty().map { it.mediaId }
+                    assertFalse(MediaIds.playlist(rockGroup) in playlistsAfterRegroup)
+                    assertEquals(3, browser.getChildren(MediaIds.playlist(jazzGroup), 0, 20, null).await().value.orEmpty().size)
+
+                    // Removing favorite s3 notifies car and updates playlist.
+                    changed.clear()
+                    app.container.stations.setFavorite(s3, false)
+                    withTimeout(5_000) {
+                        while (changed.none { it.first == MediaIds.playlist(jazzGroup) && it.second == 2 }) delay(25)
+                    }
+                } finally {
+                    app.container.stations.setFavorite(s1, false)
+                    app.container.stations.setFavorite(s2, false)
+                    app.container.stations.setFavorite(s3, false)
+                    app.container.stations.deleteGroup(emptyGroup)
+                    app.container.stations.deleteGroup(jazzGroup)
+                    app.container.stations.deleteGroup(rockGroup)
+                    app.container.preferences.setCarTiles(originalCarPrefs.tiles)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun steeringWheelPlayOptionsVoicePlayNipperFmFavoriteHeartAndVoiceSearch() = withBrowser { browser ->
+        withServer { server ->
+            val audio = wav(seconds = 15)
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = audioResponse(audio)
+            }
+            val originalCarPrefs = app.container.preferences.carPrefs.first()
+            val sRecent = station(server).copy(name = "Recent One")
+            val sPreset1 = station(server).copy(name = "Preset One")
+            val sPreset2 = station(server).copy(name = "Preset Two")
+            val sJazz1 = station(server).copy(name = "Smooth Jazz Alpha", tags = listOf("jazz"))
+            val sJazz2 = station(server).copy(name = "Smooth Jazz Beta", tags = listOf("jazz"))
+            val jazzGroup = "WheelJazz-${UUID.randomUUID().toString().take(6)}"
+            val emptyGroup = "WheelEmpty-${UUID.randomUUID().toString().take(6)}"
+            val playNipper = MediaItem.Builder()
+                .setRequestMetadata(MediaItem.RequestMetadata.Builder().setSearchQuery("Play Nipper FM").build())
+                .build()
+            suspend fun resetPlayer() {
+                browser.pause()
+                browser.clearMediaItems()
+                withTimeout(5_000) {
+                    while (browser.isPlaying || browser.currentMediaItem != null) delay(20)
+                }
+            }
+            try {
+                app.container.stations.setFavorite(sPreset1, true)
+                app.container.stations.setFavorite(sPreset2, true)
+                app.container.stations.setFavorite(sJazz1, true, jazzGroup)
+                app.container.stations.setFavorite(sJazz2, true, jazzGroup)
+                app.container.stations.pin(sPreset1.id)
+                app.container.stations.pin(sPreset2.id)
+                app.container.stations.recordPlayed(sRecent)
+
+                // 1. LastStation via onPlaybackResumption (bare play from stopped session) -> starts sRecent.
+                app.container.preferences.setWheelStart(WheelStart.LastStation)
+                resetPlayer()
+                browser.play()
+                awaitPlaying(browser)
+                assertEquals(MediaIds.station(sRecent.id), browser.currentMediaItem?.mediaId)
+
+                // 2. Presets via onPlaybackResumption -> queues Presets starting at sPreset1.
+                app.container.preferences.setWheelStart(WheelStart.Presets)
+                resetPlayer()
+                browser.play()
+                awaitPlaying(browser)
+                assertEquals(listOf(MediaIds.station(sPreset1.id), MediaIds.station(sPreset2.id)), (0 until browser.mediaItemCount).map { browser.getMediaItemAt(it).mediaId })
+                assertEquals(MediaIds.station(sPreset1.id), browser.currentMediaItem?.mediaId)
+
+                // 3. Collection("WheelJazz-...") via voice "Play Nipper FM" -> queues that collection, resuming at last-played if in it.
+                app.container.stations.recordPlayed(sJazz2)
+                app.container.preferences.setWheelStart(WheelStart.Collection(jazzGroup))
+                resetPlayer()
+                browser.setMediaItem(playNipper)
+                browser.prepare()
+                browser.play()
+                awaitPlaying(browser)
+                assertEquals(setOf(MediaIds.station(sJazz1.id), MediaIds.station(sJazz2.id)), (0 until browser.mediaItemCount).map { browser.getMediaItemAt(it).mediaId }.toSet())
+                assertEquals(MediaIds.station(sJazz2.id), browser.currentMediaItem?.mediaId)
+
+                // 4. AllFavorites via onPlaybackResumption -> queues all favorites, resuming at sJazz2 since it was last played.
+                app.container.preferences.setWheelStart(WheelStart.AllFavorites)
+                resetPlayer()
+                browser.play()
+                awaitPlaying(browser)
+                assertTrue(browser.mediaItemCount >= 4)
+                assertEquals(MediaIds.station(sJazz2.id), browser.currentMediaItem?.mediaId)
+
+                // 5. Emptied Collection via voice "Play Nipper FM" -> falls back cleanly (to LastStation = sJazz2) without failing.
+                app.container.preferences.setWheelStart(WheelStart.Collection(emptyGroup))
+                resetPlayer()
+                browser.setMediaItem(playNipper)
+                browser.prepare()
+                browser.play()
+                awaitPlaying(browser)
+                assertEquals(MediaIds.station(sJazz2.id), browser.currentMediaItem?.mediaId)
+
+                // 6. Car favorite heart toggles favorite state & updates mediaButtonPreferences.
+                val favBefore = app.container.stations.favoriteIds.first().contains(sJazz2.id)
+                assertTrue(favBefore)
+                val toggleRes = browser.sendCustomCommand(
+                    SessionCommand(SessionKeys.CMD_TOGGLE_FAVORITE, Bundle.EMPTY),
+                    Bundle.EMPTY,
+                ).await()
+                assertEquals(SessionResult.RESULT_SUCCESS, toggleRes.resultCode)
+                withTimeout(5_000) {
+                    while (app.container.stations.favoriteIds.first().contains(sJazz2.id)) delay(25)
+                }
+                assertTrue(browser.mediaButtonPreferences.any { it.icon == CommandButton.ICON_HEART_UNFILLED })
+
+                // 7. Car voice search finds matching station.
+                browser.search("Smooth Jazz Alpha", null).await()
+                val results = browser.getSearchResult("Smooth Jazz Alpha", 0, 10, null).await().value.orEmpty()
+                assertTrue(results.any { MediaIds.stationId(it.mediaId) == sJazz1.id })
+            } finally {
+                app.container.stations.setFavorite(sPreset1, false)
+                app.container.stations.setFavorite(sPreset2, false)
+                app.container.stations.setFavorite(sJazz1, false)
+                app.container.stations.setFavorite(sJazz2, false)
+                app.container.stations.deleteGroup(jazzGroup)
+                app.container.preferences.setWheelStart(originalCarPrefs.wheelStart)
+            }
+        }
+    }
+
     private suspend fun withServer(test: suspend (MockWebServer) -> Unit) {
         val server = withContext(Dispatchers.IO) { MockWebServer().apply { start(java.net.InetAddress.getByName("127.0.0.1"), 0) } }
         try {
@@ -522,9 +774,12 @@ class RadioSessionTest {
         }
     }
 
-    private fun withBrowser(test: suspend (MediaBrowser) -> Unit) = runBlocking {
+    private fun withBrowser(
+        listener: MediaBrowser.Listener = object : MediaBrowser.Listener {},
+        test: suspend (MediaBrowser) -> Unit,
+    ) = runBlocking {
         withContext(Dispatchers.Main) {
-            val browser = MediaBrowser.Builder(app, token).buildAsync().await()
+            val browser = MediaBrowser.Builder(app, token).setListener(listener).buildAsync().await()
             try {
                 browser.pause()
                 browser.clearMediaItems()
@@ -619,6 +874,7 @@ class RadioSessionTest {
 
     private companion object {
         const val ICY_METAINT = "16000"
+        const val CONTENT_STYLE_PLAYABLE_HINT = "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT"
         // One ADTS AAC-LC silent frame at 44.1 kHz (~23.22 ms).
         val ADTS_SILENT_FRAME = byteArrayOf(
             0xff.toByte(), 0xf1.toByte(), 0x50, 0x40, 0x01, 0x7f, 0xfc.toByte(), 0x01, 0x18, 0x20, 0x07,

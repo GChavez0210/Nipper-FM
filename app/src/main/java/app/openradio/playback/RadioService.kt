@@ -836,14 +836,22 @@ class RadioService : MediaLibraryService() {
         }
     }
 
+    private var lastNotifiedCollections: Set<String> = emptySet()
+
     private suspend fun notifyCarPlaylistsChanged(root: Boolean) {
         val s = session ?: return
         val favorites = repo.favoritesNow()
-        if (root) s.notifyChildrenChanged(MediaIds.ROOT, 4, null)
+        if (root) {
+            s.notifyChildrenChanged(MediaIds.ROOT, 4, null)
+            s.notifyChildrenChanged(MediaIds.PRESETS, repo.carPresetsNow().size, null)
+        }
         val names = CarPlaylists.collectionNames(favorites)
         s.notifyChildrenChanged(MediaIds.PLAYLISTS, if (favorites.isEmpty()) 0 else names.size + 1, null)
         s.notifyChildrenChanged(MediaIds.ALL_FAVORITES, favorites.size, null)
-        names.forEach { s.notifyChildrenChanged(MediaIds.playlist(it), CarPlaylists.collection(favorites, it).size, null) }
+        (names + lastNotifiedCollections).distinct().forEach { name ->
+            s.notifyChildrenChanged(MediaIds.playlist(name), CarPlaylists.collection(favorites, name).size, null)
+        }
+        lastNotifiedCollections = names.toSet()
     }
 
     private fun looksLikeImageUrl(url: String): Boolean =
@@ -1206,7 +1214,7 @@ class RadioService : MediaLibraryService() {
             val country = MediaIds.countryCode(parentId)
             val tag = MediaIds.genreTag(parentId)
             val playlist = MediaIds.playlistName(parentId)
-            val tiles = carPrefs.tiles
+            val tiles = prefsRepo.carPrefs.first().tiles
             val items: List<MediaItem> = when {
                 // Android Auto shows at most four root folders as tabs.
                 parentId == MediaIds.ROOT -> listOf(
@@ -1257,10 +1265,13 @@ class RadioService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> = scope.future {
+            folderItem(mediaId, prefsRepo.carPrefs.first().tiles)?.let {
+                return@future LibraryResult.ofItem(it, null)
+            }
             val id = MediaIds.stationId(mediaId)
             val station = id?.let { repo.localStation(it) ?: container.carCache.findStation(it) ?: repo.resolveForPlayback(it) }
             if (station == null) LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
-            else LibraryResult.ofItem(station.toMediaItem(playable = false), null)
+            else LibraryResult.ofItem(station.toMediaItem(playable = false, sourceFolder = MediaIds.sourceFolder(mediaId)), null)
         }
 
         override fun onSearch(
@@ -1413,7 +1424,7 @@ class RadioService : MediaLibraryService() {
 
     /** The queue a bare Play starts, per the steering-wheel setting in Settings → Android Auto. */
     private suspend fun wheelQueue(): CarQueue? = CarPlaylists.wheelQueue(
-        start = carPrefs.wheelStart,
+        start = prefsRepo.carPrefs.first().wheelStart,
         recents = repo.recentsNow(),
         presets = repo.carPresetsNow(),
         favorites = repo.favoritesNow(),
@@ -1498,6 +1509,28 @@ class RadioService : MediaLibraryService() {
             }
         }
         return (saved + remote).distinctBy { it.id }
+    }
+
+    /** Returns the browsable folder item for [mediaId], so [MediaLibrarySession.Callback.onSubscribe] accepts it. */
+    private fun folderItem(mediaId: String, tiles: Boolean): MediaItem? {
+        val playlist = MediaIds.playlistName(mediaId)
+        val country = MediaIds.countryCode(mediaId)
+        val tag = MediaIds.genreTag(mediaId)
+        return when {
+            mediaId == MediaIds.ROOT -> folder(MediaIds.ROOT, "Nipper FM")
+            mediaId == MediaIds.RECENT_ROOT -> folder(MediaIds.RECENT_ROOT, "Nipper FM")
+            mediaId == MediaIds.PRESETS -> folder(MediaIds.PRESETS, "Presets", tiles)
+            mediaId == MediaIds.PLAYLISTS -> folder(MediaIds.PLAYLISTS, "Playlists")
+            mediaId == MediaIds.ALL_FAVORITES -> folder(MediaIds.ALL_FAVORITES, "All favorites", tiles)
+            mediaId == MediaIds.RECENTS -> folder(MediaIds.RECENTS, "Recents")
+            mediaId == MediaIds.BROWSE -> folder(MediaIds.BROWSE, "Browse")
+            mediaId == MediaIds.COUNTRIES -> folder(MediaIds.COUNTRIES, "Countries")
+            mediaId == MediaIds.GENRES -> folder(MediaIds.GENRES, "Genres & moods")
+            playlist != null -> folder(mediaId, playlist, tiles)
+            country != null -> folder(mediaId, CountryNames.displayName(country))
+            tag != null -> folder(mediaId, tag)
+            else -> null
+        }
     }
 
     /**
