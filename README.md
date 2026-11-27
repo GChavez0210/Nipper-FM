@@ -20,6 +20,19 @@ Nipper FM is a native Android internet radio app. It finds stations through [Rad
 - **About Nipper FM.** Open the About page from Settings to see the app logo and an introduction.
 - **Back up your setup.** Export favorites, collections, car presets, custom streams, and appearance as JSON. Preview an import before merging or replacing local data.
 
+## Install
+
+<p align="center">
+  <a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/GChavez0210/Nipper-FM">
+    <img src="https://raw.githubusercontent.com/ImranR98/Obtainium/main/assets/graphics/badge_obtainium.png" alt="Get it on Obtainium" height="80">
+  </a>
+</p>
+
+[Obtainium](https://github.com/ImranR98/Obtainium) installs the latest release from GitHub and checks for updates. Open the link above on your Android device with Obtainium installed, then tap **Add**.
+
+> [!NOTE]
+> To install without Obtainium, open the [latest release](https://github.com/GChavez0210/Nipper-FM/releases/latest), download the `.apk` file under **Assets**, and open it on your device. Android may ask you to allow installs from your browser or file manager. Earlier versions are on the [releases page](https://github.com/GChavez0210/Nipper-FM/releases).
+
 ## Build and install
 
 The project uses Kotlin, Compose Material 3, Media3, Room, DataStore, Retrofit, OkHttp, kotlinx.serialization, and Coil. It has one Android module, `:app`, with application ID `app.nipperfm`. The minimum Android version is API 26. The project targets API 36 and compiles with API 37.
