@@ -486,7 +486,11 @@ private fun AndroidAutoSettings(vm: AppViewModel) {
             add(NeuMenuOption(selected.name, selected, "Empty collection"))
         }
     }
-    val selectedLabel = options.firstOrNull { it.value == prefs.wheelStart }?.label ?: "Last station"
+    val selectedLabel = options.firstOrNull { opt ->
+        val a = opt.value
+        val b = prefs.wheelStart
+        a == b || (a is WheelStart.Collection && b is WheelStart.Collection && a.name.equals(b.name, ignoreCase = true))
+    }?.label ?: "Last station"
 
     Section("Android Auto")
     Column(

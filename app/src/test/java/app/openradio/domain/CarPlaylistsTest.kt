@@ -20,9 +20,10 @@ class CarPlaylistsTest {
         assertEquals(WheelStart.LastStation, WheelStart.fromKey("bogus"))
     }
 
-    @Test fun collectionsAreCaseInsensitive() {
-        assertEquals(listOf("a", "c"), CarPlaylists.collection(favorites, "JAZZ").map { it.id })
-        assertEquals(listOf("Jazz", "News"), CarPlaylists.collectionNames(favorites))
+    @Test fun collectionsAreCaseInsensitiveAndTrimmed() {
+        val padded = favorites + fav("e", "  Jazz  ")
+        assertEquals(listOf("a", "c", "e"), CarPlaylists.collection(padded, "  JAZZ ").map { it.id })
+        assertEquals(listOf("Jazz", "News"), CarPlaylists.collectionNames(padded))
     }
 
     @Test fun collectionStartsAtTopWhenLastStationIsElsewhere() {

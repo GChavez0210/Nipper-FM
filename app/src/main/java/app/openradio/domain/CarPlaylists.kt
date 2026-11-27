@@ -46,8 +46,10 @@ data class CarQueue(val stations: List<Station>, val startIndex: Int) {
 
 object CarPlaylists {
     /** Favorites in a Collection, in Favorites order. */
-    fun collection(favorites: List<SavedStation>, name: String): List<Station> =
-        favorites.filter { it.groupName.equals(name, ignoreCase = true) }.map { it.station }
+    fun collection(favorites: List<SavedStation>, name: String): List<Station> {
+        val target = name.trim()
+        return favorites.filter { it.groupName?.trim().equals(target, ignoreCase = true) }.map { it.station }
+    }
 
     /** Collections that have at least one station, in first-seen order. */
     fun collectionNames(favorites: List<SavedStation>): List<String> =
