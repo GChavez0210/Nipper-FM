@@ -16,6 +16,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import app.openradio.domain.FailureKind
+import app.openradio.domain.TrackInfoParser
 import app.openradio.domain.PlaybackErrorClassifier
 import app.openradio.domain.PlaybackErrorDetail
 import app.openradio.domain.PlaybackStatus
@@ -45,7 +46,12 @@ data class PlayerUiState(
     val connected: Boolean = false,
     val station: Station? = null,
     val status: PlaybackStatus = PlaybackStatus.None,
+    /** "Artist - Title" (or just the title) from in-stream metadata. */
     val trackTitle: String? = null,
+    val trackArtist: String? = null,
+    val trackSong: String? = null,
+    /** Cover art for the current song, when the stream or a lookup supplied one. */
+    val trackArtworkUrl: String? = null,
     val isPlaying: Boolean = false,
     /** Non-null only when the stream exposes a seekable live window. */
     val seekableLive: Boolean = false,
@@ -245,8 +251,10 @@ class PlaybackConnection(private val context: Context) {
             )
         }
 
-        val streamTitle = c.mediaMetadata.title?.toString()
-        val track = streamTitle?.takeIf { it.isNotBlank() && it != station?.name }
+        // The session splits artist and song (see TrackInfoPlayer); rejoin them for history and copying.
+        val track = TrackInfoParser.parse(c.mediaMetadata.title?.toString(), c.mediaMetadata.artist?.toString(), station?.name)
+        val trackArt = c.mediaMetadata.artworkUri?.toString()
+            ?.takeIf { track != null && it != station?.faviconUrl && it != item?.mediaMetadata?.artworkUri?.toString() }
 
         val win = liveWindowMs(c)
         val seekable = item != null && c.isCurrentMediaItemLive && c.isCurrentMediaItemSeekable &&
@@ -269,7 +277,10 @@ class PlaybackConnection(private val context: Context) {
             connected = true,
             station = station,
             status = status,
-            trackTitle = track,
+            trackTitle = track?.display,
+            trackArtist = track?.artist,
+            trackSong = track?.title,
+            trackArtworkUrl = trackArt,
             isPlaying = c.isPlaying,
             seekableLive = seekable,
             sleepEndsAtMs = extras.getLong(SessionKeys.EXTRA_SLEEP_ENDS_AT, 0L),

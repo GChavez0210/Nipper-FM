@@ -26,6 +26,11 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Metadata
+import androidx.media3.extractor.metadata.icy.IcyInfo
+import androidx.media3.extractor.metadata.id3.ApicFrame
+import androidx.media3.extractor.metadata.id3.TextInformationFrame
+import androidx.core.net.toUri
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -53,8 +58,13 @@ import app.openradio.MainActivity
 import app.openradio.R
 import app.openradio.RadioApp
 import app.openradio.data.remote.RadioBrowserClient
+import app.openradio.data.remote.TrackArtworkClient
+import app.openradio.domain.TrackInfoParser
 import app.openradio.domain.AlternateFeedSelector
 import app.openradio.domain.BufferProfile
+import app.openradio.domain.CarPlaylists
+import app.openradio.domain.CarPrefs
+import app.openradio.domain.CarQueue
 import app.openradio.domain.ErrorLogEntry
 import app.openradio.domain.EqPreset
 import app.openradio.domain.FailureKind
@@ -87,6 +97,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
 
@@ -105,7 +116,27 @@ class RadioService : MediaLibraryService() {
     private val prefsRepo get() = container.preferences
 
     private lateinit var player: ExoPlayer
+    /** What the session exposes: [player] with artist, song, and cover art split out of stream metadata. */
+    private lateinit var sessionPlayer: TrackInfoPlayer
     private var session: MediaLibrarySession? = null
+    private val artworkClient get() = container.artworkClient
+    private var artworkJob: Job? = null
+
+    /**
+     * Most recent ICY or ID3 track packet seen for the current station. Keeping the exact packet
+     * prevents ExoPlayer's cumulative ID3 metadata merging from leaking an older track's artist
+     * or embedded cover onto a newer title-only track.
+     */
+    private data class TrackPacket(
+        val mediaId: String?,
+        val title: String?,
+        val artist: String?,
+        val streamArtUrl: String?,
+        val hasEmbeddedArt: Boolean,
+    )
+
+    private var latestTrackPacket: TrackPacket? = null
+    private var trackPacketUpdated = false
     private lateinit var reconnect: ReconnectController
     private lateinit var sleepTimer: SleepTimer
     private val audioFx = AudioFxController()
@@ -116,6 +147,7 @@ class RadioService : MediaLibraryService() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private var playbackPrefs: PlaybackPrefs = PlaybackPrefs()
+    private var carPrefs: CarPrefs = CarPrefs()
     private var stationEq: EqPreset? = null
     private var stationSettingsJob: Job? = null
 
@@ -269,6 +301,7 @@ class RadioService : MediaLibraryService() {
         )
 
         player.addListener(PlayerEvents())
+        sessionPlayer = TrackInfoPlayer(player)
 
         val activityIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
@@ -279,7 +312,7 @@ class RadioService : MediaLibraryService() {
                 .setDataSourceFactory(dataSourceFactory)
                 .build(),
         )
-        session = MediaLibrarySession.Builder(this, player, LibraryCallback())
+        session = MediaLibrarySession.Builder(this, sessionPlayer, LibraryCallback())
             .setId("radio")
             .setSessionActivity(activityIntent)
             .setBitmapLoader(bitmapLoader)
@@ -314,14 +347,17 @@ class RadioService : MediaLibraryService() {
                 }
 
                 override fun getNotificationContentTitle(metadata: MediaMetadata): CharSequence? =
-                    metadata.title ?: metadata.station ?: metadata.displayTitle
+                    metadata.title?.takeIf { it.isNotBlank() } ?: metadata.station ?: metadata.displayTitle
 
-                override fun getNotificationContentText(metadata: MediaMetadata): CharSequence? =
-                    if (metadata.title != null && metadata.title != metadata.station) {
-                        metadata.station ?: metadata.subtitle
+                override fun getNotificationContentText(metadata: MediaMetadata): CharSequence? {
+                    val title = metadata.title?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+                    val station = metadata.station?.toString()?.trim()
+                    return if (title != null && !title.equals(station, ignoreCase = true)) {
+                        listOfNotNull(metadata.artist?.takeIf { it.isNotBlank() }, metadata.station ?: metadata.subtitle).joinToString(" · ")
                     } else {
-                        metadata.subtitle ?: metadata.artist
+                        metadata.subtitle ?: metadata.artist?.takeIf { it.isNotBlank() }
                     }
+                }
             }.also {
                 it.setSmallIcon(R.drawable.ic_stat_radio)
             },
@@ -330,7 +366,12 @@ class RadioService : MediaLibraryService() {
         // Observe audio processing & network playback preferences.
         scope.launch {
             prefsRepo.playbackPrefs.collect { prefs ->
+                val artworkToggled = prefs.trackArtwork != playbackPrefs.trackArtwork
                 playbackPrefs = prefs
+                if (artworkToggled) {
+                    sessionPlayer.updateEnrichment(null)
+                    enrichTrack()
+                }
                 applyAudioPrefs()
                 if (enforceWifiOnly()) return@collect
                 if (!prefs.wifiOnly && wifiOnlyBlocked) {
@@ -340,10 +381,19 @@ class RadioService : MediaLibraryService() {
             }
         }
 
-        // Keep the car's Presets / Recents lists and the home-screen widget in sync.
+        scope.launch {
+            prefsRepo.carPrefs.collect { prefs ->
+                val layoutChanged = prefs.tiles != carPrefs.tiles
+                carPrefs = prefs
+                if (layoutChanged) notifyCarPlaylistsChanged(root = true)
+            }
+        }
+
+        // Keep the car's Presets / Playlists / Recents lists and the home-screen widget in sync.
         scope.launch {
             repo.favorites.drop(1).collect {
                 session?.notifyChildrenChanged(MediaIds.PRESETS, repo.carPresetsNow().size, null)
+                notifyCarPlaylistsChanged(root = false)
                 updateWidget()
             }
         }
@@ -498,6 +548,10 @@ class RadioService : MediaLibraryService() {
             // retryPlayback() replaces the item in place; that is not a station change.
             if (id == currentStationId) return
             currentStationId = id
+            latestTrackPacket = null
+            trackPacketUpdated = false
+            artworkJob?.cancel()
+            sessionPlayer.updateEnrichment(null)
             if (id != wakeStationId) clearWakeRamp()
             cancelHeadsetResume()
             mobileDataOverrideOnce = false
@@ -566,15 +620,63 @@ class RadioService : MediaLibraryService() {
             }
         }
 
-        override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-            val item = player.currentMediaItem ?: return
-            val station = item.toStation() ?: return
-            val title = mediaMetadata.title?.toString()?.trim().orEmpty()
-            if (title.isNotEmpty() && !title.equals(station.name, ignoreCase = true)) {
-                scope.launch { repo.recordOnAir(station, title) }
-                sleepTimer.onTrackTitle(title)
+        override fun onEvents(player: Player, events: Player.Events) {
+            if (events.contains(Player.EVENT_MEDIA_METADATA_CHANGED) || trackPacketUpdated) {
+                trackPacketUpdated = false
+                onTrackMetadataUpdated()
             }
-            updateWidget()
+        }
+
+        override fun onMetadata(metadata: Metadata) {
+            val mediaId = player.currentMediaItem?.mediaId ?: return
+            var icy: IcyInfo? = null
+            var id3Title: String? = null
+            var id3Artist: String? = null
+            var hasId3TrackFrame = false
+            var hasApic = false
+            for (i in 0 until metadata.length()) {
+                when (val entry = metadata.get(i)) {
+                    is IcyInfo -> icy = entry
+                    is TextInformationFrame -> when (entry.id) {
+                        "TIT2", "TT2" -> {
+                            hasId3TrackFrame = true
+                            id3Title = entry.values.firstOrNull()
+                        }
+                        "TPE1", "TP1" -> {
+                            hasId3TrackFrame = true
+                            id3Artist = entry.values.firstOrNull()
+                        }
+                    }
+                    is ApicFrame -> hasApic = true
+                }
+            }
+            if (icy != null) {
+                val url = icy.url?.trim()?.takeIf(::looksLikeImageUrl)
+                latestTrackPacket = TrackPacket(
+                    mediaId = mediaId,
+                    title = icy.title,
+                    artist = null,
+                    streamArtUrl = url,
+                    hasEmbeddedArt = false,
+                )
+                trackPacketUpdated = true
+                return
+            }
+            if (hasId3TrackFrame || hasApic) {
+                val prev = latestTrackPacket?.takeIf { it.mediaId == mediaId }
+                val effectiveTitle = if (id3Title != null) id3Title else prev?.title
+                // A new TIT2 starts a new track, so an absent TPE1/APIC clears any previous artist/cover.
+                val effectiveArtist = if (id3Title != null) id3Artist else (id3Artist ?: prev?.artist)
+                val effectiveApic = if (id3Title != null) hasApic else (hasApic || prev?.hasEmbeddedArt == true)
+                latestTrackPacket = TrackPacket(
+                    mediaId = mediaId,
+                    title = effectiveTitle,
+                    artist = effectiveArtist,
+                    streamArtUrl = null,
+                    hasEmbeddedArt = effectiveApic,
+                )
+                trackPacketUpdated = true
+            }
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -626,6 +728,135 @@ class RadioService : MediaLibraryService() {
             updateWidget()
         }
     }
+
+    private fun currentTrack(): app.openradio.domain.TrackInfo? {
+        val item = player.currentMediaItem ?: return null
+        val station = item.toStation() ?: return null
+        val packet = latestTrackPacket?.takeIf { it.mediaId == item.mediaId }
+        val titleField = if (packet != null) packet.title else player.mediaMetadata.title?.toString()
+        val artistField = if (packet != null) packet.artist else player.mediaMetadata.artist?.toString()
+        return TrackInfoParser.parse(titleField, artistField, station.name)
+    }
+
+    private fun onTrackMetadataUpdated() {
+        val item = player.currentMediaItem ?: return
+        val station = item.toStation() ?: return
+        val track = currentTrack()
+        if (track != null) {
+            scope.launch { repo.recordOnAir(station, track.display) }
+            sleepTimer.onTrackTitle(track.display)
+        }
+        enrichTrack()
+        updateWidget()
+    }
+
+    /**
+     * Splits the current stream title into artist and song for the session, and adds cover art:
+     * a `StreamUrl` image sent by the station, else (when enabled) an iTunes Search API match.
+     */
+    private fun enrichTrack() {
+        val item = player.currentMediaItem
+        val mediaId = item?.mediaId
+        val station = item?.toStation()
+        val meta = player.mediaMetadata
+        val rawTitle = meta.title?.toString()?.trim().orEmpty()
+        val rawArtist = meta.artist?.toString()?.trim().orEmpty()
+        if (station == null) {
+            artworkJob?.cancel()
+            sessionPlayer.updateEnrichment(null)
+            return
+        }
+        val packet = latestTrackPacket?.takeIf { it.mediaId == mediaId }
+        val track = currentTrack()
+        val clearEmbedded = packet != null && !packet.hasEmbeddedArt
+        if (track == null) {
+            artworkJob?.cancel()
+            // Explicitly clear blank / station-name titles and any stale artist or APIC cover.
+            val hasStaleMetadata = meta.title != null || meta.artist != null || meta.artworkData != null
+            sessionPlayer.updateEnrichment(
+                if (hasStaleMetadata) {
+                    TrackInfoPlayer.Enrichment(
+                        mediaId = mediaId,
+                        rawTitle = rawTitle,
+                        rawArtist = rawArtist,
+                        track = null,
+                        artworkUri = null,
+                        clearEmbeddedArtwork = true,
+                    )
+                } else {
+                    null
+                },
+            )
+            return
+        }
+        val streamArt = packet?.streamArtUrl?.toUri()
+        val current = sessionPlayer.enrichment
+        if (current != null &&
+            current.mediaId == mediaId &&
+            current.rawTitle == rawTitle &&
+            current.rawArtist == rawArtist &&
+            current.track == track &&
+            current.clearEmbeddedArtwork == clearEmbedded &&
+            (streamArt == null || current.artworkUri == streamArt)
+        ) return
+        artworkJob?.cancel()
+        sessionPlayer.updateEnrichment(
+            TrackInfoPlayer.Enrichment(
+                mediaId = mediaId,
+                rawTitle = rawTitle,
+                rawArtist = rawArtist,
+                track = track,
+                artworkUri = streamArt,
+                clearEmbeddedArtwork = clearEmbedded,
+            ),
+        )
+        val hasCurrentEmbeddedArt = meta.artworkData != null && !clearEmbedded
+        if (streamArt != null || !playbackPrefs.trackArtwork || !track.isSong || hasCurrentEmbeddedArt) return
+        artworkJob = scope.launch {
+            // Confirm persisted preference on cold start before making any network request.
+            if (!prefsRepo.playbackPrefs.first().trackArtwork) return@launch
+            val url = artworkClient.artworkFor(track) ?: return@launch
+            val nowMeta = player.mediaMetadata
+            if (!playbackPrefs.trackArtwork ||
+                player.currentMediaItem?.mediaId != mediaId ||
+                nowMeta.title?.toString()?.trim().orEmpty() != rawTitle ||
+                nowMeta.artist?.toString()?.trim().orEmpty() != rawArtist ||
+                currentTrack() != track
+            ) return@launch
+            sessionPlayer.updateEnrichment(
+                TrackInfoPlayer.Enrichment(
+                    mediaId = mediaId,
+                    rawTitle = rawTitle,
+                    rawArtist = rawArtist,
+                    track = track,
+                    artworkUri = url.toUri(),
+                    clearEmbeddedArtwork = clearEmbedded,
+                ),
+            )
+        }
+    }
+
+    private var lastNotifiedCollections: Set<String> = emptySet()
+
+    private suspend fun notifyCarPlaylistsChanged(root: Boolean) {
+        val s = session ?: return
+        val favorites = repo.favoritesNow()
+        if (root) {
+            s.notifyChildrenChanged(MediaIds.ROOT, 4, null)
+            s.notifyChildrenChanged(MediaIds.PRESETS, repo.carPresetsNow().size, null)
+        }
+        val names = CarPlaylists.collectionNames(favorites)
+        s.notifyChildrenChanged(MediaIds.PLAYLISTS, if (favorites.isEmpty()) 0 else names.size + 1, null)
+        s.notifyChildrenChanged(MediaIds.ALL_FAVORITES, favorites.size, null)
+        (names + lastNotifiedCollections).distinct().forEach { name ->
+            s.notifyChildrenChanged(MediaIds.playlist(name), CarPlaylists.collection(favorites, name).size, null)
+        }
+        lastNotifiedCollections = names.toSet()
+    }
+
+    private fun looksLikeImageUrl(url: String): Boolean =
+        url.startsWith("http", ignoreCase = true) &&
+            Regex("\\.(jpe?g|png|webp)(\\?.*)?$", RegexOption.IGNORE_CASE).containsMatchIn(url)
 
     /** After a long pause the buffered audio is stale; rejoin the live edge. */
     private fun jumpToLive() {
@@ -759,8 +990,7 @@ class RadioService : MediaLibraryService() {
             hasError = player.playerError != null || wifiOnlyBlocked,
             recovery = reconnect.state.phase,
         )
-        val rawTitle = player.mediaMetadata.title?.toString()
-        val track = rawTitle?.takeIf { it.isNotBlank() && it != station?.name }
+        val track = currentTrack()?.display
         RadioWidgetProvider.updateAllWidgets(this, station, status, track)
         LastStationTileService.requestUpdate(this)
     }
@@ -912,9 +1142,7 @@ class RadioService : MediaLibraryService() {
                     return Futures.immediateFuture(SessionResult(result))
                 }
                 SessionKeys.CMD_SLEEP_END_OF_TRACK -> {
-                    val station = player.currentMediaItem?.toStation()
-                    val title = player.mediaMetadata.title?.toString()?.trim()
-                        ?.takeIf { it.isNotEmpty() && !it.equals(station?.name, ignoreCase = true) }
+                    val title = currentTrack()?.display
                         ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
                     sleepTimer.stopAfterTrack(title)
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
@@ -966,15 +1194,10 @@ class RadioService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<MediaItem>> {
             val rootId = if (params?.isRecent == true) MediaIds.RECENT_ROOT else MediaIds.ROOT
+            // Rows by default; Presets and playlists ask for tiles on their own folder items.
             val extras = Bundle().apply {
-                putInt(
-                    CONTENT_STYLE_PLAYABLE_HINT,
-                    CONTENT_STYLE_LIST_ITEM,
-                )
-                putInt(
-                    CONTENT_STYLE_BROWSABLE_HINT,
-                    CONTENT_STYLE_LIST_ITEM,
-                )
+                putInt(CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_LIST_ITEM)
+                putInt(CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_LIST_ITEM)
             }
             val rootParams = LibraryParams.Builder().setExtras(extras).build()
             return Futures.immediateFuture(LibraryResult.ofItem(folder(rootId, "Nipper FM"), rootParams))
@@ -990,14 +1213,29 @@ class RadioService : MediaLibraryService() {
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = scope.future {
             val country = MediaIds.countryCode(parentId)
             val tag = MediaIds.genreTag(parentId)
+            val playlist = MediaIds.playlistName(parentId)
+            val tiles = prefsRepo.carPrefs.first().tiles
             val items: List<MediaItem> = when {
+                // Android Auto shows at most four root folders as tabs.
                 parentId == MediaIds.ROOT -> listOf(
-                    folder(MediaIds.PRESETS, "Presets"),
+                    folder(MediaIds.PRESETS, "Presets", tiles),
+                    folder(MediaIds.PLAYLISTS, "Playlists"),
                     folder(MediaIds.RECENTS, "Recents"),
+                    folder(MediaIds.BROWSE, "Browse"),
+                )
+                parentId == MediaIds.PRESETS -> repo.carPresetsNow().map { it.toMediaItem(playable = false) }
+                parentId == MediaIds.PLAYLISTS -> {
+                    val favorites = repo.favoritesNow()
+                    if (favorites.isEmpty()) emptyList()
+                    else listOf(folder(MediaIds.ALL_FAVORITES, "All favorites", tiles)) +
+                        CarPlaylists.collectionNames(favorites).map { folder(MediaIds.playlist(it), it, tiles) }
+                }
+                parentId == MediaIds.ALL_FAVORITES || playlist != null ->
+                    playlistStations(parentId).orEmpty().map { it.toMediaItem(playable = false, sourceFolder = parentId) }
+                parentId == MediaIds.BROWSE -> listOf(
                     folder(MediaIds.COUNTRIES, "Countries"),
                     folder(MediaIds.GENRES, "Genres & moods"),
                 )
-                parentId == MediaIds.PRESETS -> repo.carPresetsNow().map { it.toMediaItem(playable = false) }
                 parentId == MediaIds.RECENTS -> repo.recentsNow().map { it.toMediaItem(playable = false) }
                 parentId == MediaIds.RECENT_ROOT -> repo.recentsNow().take(1).map { it.toMediaItem(playable = false) }
                 parentId == MediaIds.COUNTRIES -> carCountryCodes().map {
@@ -1027,10 +1265,13 @@ class RadioService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> = scope.future {
+            folderItem(mediaId, prefsRepo.carPrefs.first().tiles)?.let {
+                return@future LibraryResult.ofItem(it, null)
+            }
             val id = MediaIds.stationId(mediaId)
             val station = id?.let { repo.localStation(it) ?: container.carCache.findStation(it) ?: repo.resolveForPlayback(it) }
             if (station == null) LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
-            else LibraryResult.ofItem(station.toMediaItem(playable = false), null)
+            else LibraryResult.ofItem(station.toMediaItem(playable = false, sourceFolder = MediaIds.sourceFolder(mediaId)), null)
         }
 
         override fun onSearch(
@@ -1081,8 +1322,13 @@ class RadioService : MediaLibraryService() {
             val recents = repo.recentsNow()
             val favorites = repo.favoritesNow().map { it.station }
             val voiceQueue = resolved.queue?.takeIf { q -> q.any { it.id == station.id } }
+            // A tap inside a car playlist queues that playlist.
+            val browsedPlaylist = MediaIds.sourceFolder(requested.mediaId)
+                ?.let { playlistStations(it) }
+                ?.takeIf { q -> q.any { it.id == station.id } }
             val list = when {
                 voiceQueue != null -> voiceQueue
+                browsedPlaylist != null -> browsedPlaylist
                 presets.any { it.id == station.id } -> presets
                 recents.any { it.id == station.id } -> recents
                 favorites.any { it.id == station.id } -> favorites
@@ -1110,9 +1356,9 @@ class RadioService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
             isForPlayback: Boolean,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = scope.future {
-            val last = repo.recentsNow().firstOrNull() ?: repo.carPresetsNow().firstOrNull()
-                ?: throw UnsupportedOperationException("Nothing to resume")
-            MediaSession.MediaItemsWithStartPosition(listOf(last.toMediaItem(playable = isForPlayback)), 0, C.TIME_UNSET)
+            val queue = wheelQueue() ?: throw UnsupportedOperationException("Nothing to resume")
+            val items = queue.stations.map { it.toMediaItem(playable = isForPlayback) }
+            MediaSession.MediaItemsWithStartPosition(items, queue.startIndex, C.TIME_UNSET)
         }
     }
 
@@ -1147,10 +1393,7 @@ class RadioService : MediaLibraryService() {
      */
     private suspend fun resolveVoice(query: String): Resolution? {
         if (VoiceMatch.cleanQuery(query).isEmpty()) {
-            val presets = repo.carPresetsNow()
-            presets.firstOrNull()?.let { return Resolution(it, presets) }
-            val recents = repo.recentsNow()
-            return recents.firstOrNull()?.let { Resolution(it, recents) }
+            return wheelQueue()?.let { Resolution(it.current, it.stations) }
         }
         // "Made in Germany Radio" or "Jazz" saved as favorites should not turn into a category.
         val favorites = repo.favoritesNow().map { it.station }
@@ -1168,6 +1411,24 @@ class RadioService : MediaLibraryService() {
         val pick = VoiceMatch.best(stationQuery, results) ?: results.firstOrNull() ?: return null
         return Resolution(pick)
     }
+
+    /** Stations in a car playlist folder (All favorites or a Collection), or null for other folders. */
+    private suspend fun playlistStations(folderId: String): List<Station>? {
+        val name = MediaIds.playlistName(folderId)
+        return when {
+            folderId == MediaIds.ALL_FAVORITES -> repo.favoritesNow().map { it.station }
+            name != null -> CarPlaylists.collection(repo.favoritesNow(), name)
+            else -> null
+        }
+    }
+
+    /** The queue a bare Play starts, per the steering-wheel setting in Settings → Android Auto. */
+    private suspend fun wheelQueue(): CarQueue? = CarPlaylists.wheelQueue(
+        start = prefsRepo.carPrefs.first().wheelStart,
+        recents = repo.recentsNow(),
+        presets = repo.carPresetsNow(),
+        favorites = repo.favoritesNow(),
+    )
 
     /** Search results for the car's search screen: category lists or matching stations. */
     private suspend fun voiceCandidates(query: String): List<Station> {
@@ -1250,17 +1511,54 @@ class RadioService : MediaLibraryService() {
         return (saved + remote).distinctBy { it.id }
     }
 
-    private fun folder(id: String, title: String) = MediaItem.Builder()
-        .setMediaId(id)
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle(title)
-                .setIsBrowsable(true)
-                .setIsPlayable(false)
-                .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_RADIO_STATIONS)
-                .build(),
-        )
-        .build()
+    /** Returns the browsable folder item for [mediaId], so [MediaLibrarySession.Callback.onSubscribe] accepts it. */
+    private fun folderItem(mediaId: String, tiles: Boolean): MediaItem? {
+        val playlist = MediaIds.playlistName(mediaId)
+        val country = MediaIds.countryCode(mediaId)
+        val tag = MediaIds.genreTag(mediaId)
+        return when {
+            mediaId == MediaIds.ROOT -> folder(MediaIds.ROOT, "Nipper FM")
+            mediaId == MediaIds.RECENT_ROOT -> folder(MediaIds.RECENT_ROOT, "Nipper FM")
+            mediaId == MediaIds.PRESETS -> folder(MediaIds.PRESETS, "Presets", tiles)
+            mediaId == MediaIds.PLAYLISTS -> folder(MediaIds.PLAYLISTS, "Playlists")
+            mediaId == MediaIds.ALL_FAVORITES -> folder(MediaIds.ALL_FAVORITES, "All favorites", tiles)
+            mediaId == MediaIds.RECENTS -> folder(MediaIds.RECENTS, "Recents")
+            mediaId == MediaIds.BROWSE -> folder(MediaIds.BROWSE, "Browse")
+            mediaId == MediaIds.COUNTRIES -> folder(MediaIds.COUNTRIES, "Countries")
+            mediaId == MediaIds.GENRES -> folder(MediaIds.GENRES, "Genres & moods")
+            playlist != null -> folder(mediaId, playlist, tiles)
+            country != null -> folder(mediaId, CountryNames.displayName(country))
+            tag != null -> folder(mediaId, tag)
+            else -> null
+        }
+    }
+
+    /**
+     * A browsable folder. [playableTiles] shows its stations as artwork tiles and
+     * [browsableTiles] its subfolders; otherwise the root's row style applies.
+     */
+    private fun folder(id: String, title: String, playableTiles: Boolean = false, browsableTiles: Boolean = false) =
+        MediaItem.Builder()
+            .setMediaId(id)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(title)
+                    .setIsBrowsable(true)
+                    .setIsPlayable(false)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_RADIO_STATIONS)
+                    .apply {
+                        if (playableTiles || browsableTiles) {
+                            setExtras(
+                                Bundle().apply {
+                                    if (playableTiles) putInt(CONTENT_STYLE_PLAYABLE_HINT, CONTENT_STYLE_GRID_ITEM)
+                                    if (browsableTiles) putInt(CONTENT_STYLE_BROWSABLE_HINT, CONTENT_STYLE_GRID_ITEM)
+                                },
+                            )
+                        }
+                    }
+                    .build(),
+            )
+            .build()
 
     private fun paged(items: List<MediaItem>, page: Int, pageSize: Int): ImmutableList<MediaItem> {
         val size = if (pageSize <= 0) items.size else pageSize
@@ -1279,5 +1577,6 @@ class RadioService : MediaLibraryService() {
         private const val CONTENT_STYLE_PLAYABLE_HINT = "android.media.browse.CONTENT_STYLE_PLAYABLE_HINT"
         private const val CONTENT_STYLE_BROWSABLE_HINT = "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT"
         private const val CONTENT_STYLE_LIST_ITEM = 1
+        private const val CONTENT_STYLE_GRID_ITEM = 2
     }
 }

@@ -60,6 +60,8 @@ import androidx.compose.ui.unit.dp
 import app.openradio.domain.BackupPayload
 import app.openradio.domain.BackupPreviewSummary
 import app.openradio.domain.BufferProfile
+import app.openradio.domain.CarPlaylists
+import app.openradio.domain.WheelStart
 import app.openradio.domain.DataUsageEstimator
 import app.openradio.domain.DataUsageMath
 import app.openradio.domain.MonthlyUsage
@@ -171,6 +173,7 @@ fun SettingsScreen(vm: AppViewModel, onBack: () -> Unit, onOpenAbout: () -> Unit
         }
 
         PlaybackAudioSettings(vm)
+        AndroidAutoSettings(vm)
         Section("Scheduled listening")
         ListeningRoutinesSettings(
             Modifier.fillMaxWidth()
@@ -446,6 +449,12 @@ private fun PlaybackAudioSettings(vm: AppViewModel) {
         PlaybackSwitch("Wi-Fi only", prefs.wifiOnly, vm::setWifiOnly)
         PlaybackSwitch("Resume when headphones reconnect", resumeHeadset, vm::setResumeHeadset)
         Text("Resumes after an audio device disconnects.", style = MaterialTheme.typography.bodySmall)
+        PlaybackSwitch("Look up album artwork", prefs.trackArtwork, vm::setTrackArtwork)
+        Text(
+            "When a station names the song, Nipper FM searches the iTunes catalog for its cover. " +
+                "Only the artist and title are sent.",
+            style = MaterialTheme.typography.bodySmall,
+        )
         DataUsageSummary(vm)
         Text("Buffer profile", style = MaterialTheme.typography.titleMedium)
         NeuDropdownSelector(
@@ -459,6 +468,58 @@ private fun PlaybackAudioSettings(vm: AppViewModel) {
         EqualizerPresetPicker(prefs.eqPreset, vm::setEqPreset)
         PlaybackSwitch("Spatial audio", prefs.spatialAudio, vm::setSpatialAudio)
         PlaybackSwitch("Loudness normalization", prefs.loudnessNorm, vm::setLoudnessNorm)
+    }
+}
+
+@Composable
+private fun AndroidAutoSettings(vm: AppViewModel) {
+    val prefs by vm.carPrefs.collectAsState()
+    val favorites by vm.favorites.collectAsState()
+    val collections = remember(favorites) { CarPlaylists.collectionNames(favorites) }
+    val options = buildList<NeuMenuOption<WheelStart>> {
+        add(NeuMenuOption("Last station", WheelStart.LastStation, "Resume what you played last"))
+        add(NeuMenuOption("Presets", WheelStart.Presets, "Your Android Auto presets"))
+        add(NeuMenuOption("All favorites", WheelStart.AllFavorites, null))
+        collections.forEach { add(NeuMenuOption(it, WheelStart.Collection(it), "Collection")) }
+        val selected = prefs.wheelStart
+        if (selected is WheelStart.Collection && collections.none { it.equals(selected.name, ignoreCase = true) }) {
+            add(NeuMenuOption(selected.name, selected, "Empty collection"))
+        }
+    }
+    val selectedLabel = options.firstOrNull { opt ->
+        val a = opt.value
+        val b = prefs.wheelStart
+        a == b || (a is WheelStart.Collection && b is WheelStart.Collection && a.name.equals(b.name, ignoreCase = true))
+    }?.label ?: "Last station"
+
+    Section("Android Auto")
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .neuRaised(shape = RoundedCornerShape(24.dp), elevation = 5.dp)
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        PlaybackSwitch("Show presets as tiles", prefs.tiles, vm::setCarTiles)
+        Text(
+            "Presets and playlists appear as a grid of station logos instead of rows.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text("Steering wheel Play starts", style = MaterialTheme.typography.titleMedium)
+        NeuDropdownSelector(
+            label = selectedLabel,
+            active = true,
+            options = options,
+            modifier = Modifier.fillMaxWidth(),
+            fillAnchor = true,
+            onSelect = vm::setWheelStart,
+        )
+        Text(
+            "Also applies to Bluetooth play buttons and \"Play Nipper FM\". Next and previous move " +
+                "through the chosen playlist. Collections appear under Playlists in the car.",
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
