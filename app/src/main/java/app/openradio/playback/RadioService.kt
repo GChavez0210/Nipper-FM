@@ -982,8 +982,7 @@ class RadioService : MediaLibraryService() {
             hasError = player.playerError != null || wifiOnlyBlocked,
             recovery = reconnect.state.phase,
         )
-        val rawTitle = player.mediaMetadata.title?.toString()
-        val track = rawTitle?.takeIf { it.isNotBlank() && it != station?.name }
+        val track = currentTrack()?.display
         RadioWidgetProvider.updateAllWidgets(this, station, status, track)
         LastStationTileService.requestUpdate(this)
     }
@@ -1135,9 +1134,7 @@ class RadioService : MediaLibraryService() {
                     return Futures.immediateFuture(SessionResult(result))
                 }
                 SessionKeys.CMD_SLEEP_END_OF_TRACK -> {
-                    val station = player.currentMediaItem?.toStation()
-                    val title = player.mediaMetadata.title?.toString()?.trim()
-                        ?.takeIf { it.isNotEmpty() && !it.equals(station?.name, ignoreCase = true) }
+                    val title = currentTrack()?.display
                         ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
                     sleepTimer.stopAfterTrack(title)
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))

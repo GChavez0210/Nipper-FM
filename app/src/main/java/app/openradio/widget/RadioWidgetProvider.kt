@@ -121,7 +121,7 @@ class RadioWidgetProvider : AppWidgetProvider() {
                     ?: app?.container?.playback?.state?.value?.station
                     ?: runCatching { app?.container?.stations?.recentsNow()?.firstOrNull() }.getOrNull()
                 val activeStatus = if (station != null) status else (app?.container?.playback?.state?.value?.status ?: PlaybackStatus.None)
-                val activeTrack = trackTitle ?: app?.container?.playback?.state?.value?.trackTitle
+                val activeTrack = if (station != null) trackTitle else app?.container?.playback?.state?.value?.trackTitle
 
                 ids.forEach { id ->
                     val widgetPresets = configuredPresets(context, id)?.map {

@@ -4,12 +4,15 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Intent
+import android.os.Bundle
 import android.os.PowerManager
 import androidx.core.content.getSystemService
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaBrowser
 import androidx.media3.session.MediaLibraryService.LibraryParams
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import androidx.test.platform.app.InstrumentationRegistry
 import app.openradio.RadioApp
@@ -36,6 +39,7 @@ import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 @OptIn(UnstableApi::class)
@@ -339,6 +343,67 @@ class RadioSessionTest {
                 app.container.artworkClient = originalClient
                 app.container.preferences.setTrackArtwork(originalPref)
             }
+        }
+    }
+
+    @Test
+    fun stopAfterTrackHandlesNormalizedTitleAndAvoidsDuplicateHistory() = withBrowser { browser ->
+        withServer { server ->
+            val logo = "http://127.0.0.1:${server.port}/logo.png"
+            val cover = "http://127.0.0.1:${server.port}/cover.jpg"
+            // Block 0 & block 2 repeat the same song using an en-dash; block 6 moves to a new song.
+            val icyBody = icyStreamBlocks(
+                wav(seconds = 8),
+                mapOf(
+                    0 to "StreamTitle='Lucio Battisti – Il mio canto libero';StreamUrl='$cover';",
+                    2 to "StreamTitle='Lucio Battisti – Il mio canto libero';StreamUrl='$cover';",
+                    6 to "StreamTitle='Mina – Se telefonando';",
+                ),
+            )
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = MockResponse()
+                    .setHeader("Content-Type", "audio/wav")
+                    .setHeader("icy-metaint", ICY_METAINT)
+                    .setBody(Buffer().write(icyBody))
+            }
+            val station = station(server).copy(faviconUrl = logo)
+            browser.setMediaItem(station.toMediaItem(playable = true))
+            browser.prepare()
+            browser.play()
+            awaitPlaying(browser)
+
+            withTimeout(15_000) {
+                while (browser.mediaMetadata.title?.toString() != "Il mio canto libero") delay(20)
+            }
+            assertEquals("Lucio Battisti", browser.mediaMetadata.artist?.toString())
+
+            // Arm "stop after this track". Repeated en-dash metadata at block 2 must NOT pause early.
+            val res = browser.sendCustomCommand(
+                SessionCommand(SessionKeys.CMD_SLEEP_END_OF_TRACK, Bundle.EMPTY),
+                Bundle.EMPTY,
+            ).await()
+            assertEquals(SessionResult.RESULT_SUCCESS, res.resultCode)
+            assertTrue(browser.sessionExtras.getBoolean(SessionKeys.EXTRA_SLEEP_END_OF_TRACK))
+
+            // Wait past block 2 (~1s into 8s audio): must still be playing until block 6 (~3s).
+            delay(1_400)
+            assertTrue("Expected playback to continue through repeated metadata", browser.playWhenReady)
+
+            // When block 6 ("Se telefonando") arrives, playback must pause automatically.
+            withTimeout(15_000) {
+                while (browser.playWhenReady) delay(25)
+            }
+            assertFalse(browser.sessionExtras.getBoolean(SessionKeys.EXTRA_SLEEP_END_OF_TRACK))
+
+            // History must contain "Lucio Battisti - Il mio canto libero" only once (no duplicate).
+            val history = app.container.stations.onAirHistory.first()
+                .filter { it.stationId == station.id }
+            assertEquals(1, history.count { it.trackTitle == "Lucio Battisti - Il mio canto libero" })
+            assertTrue(history.any { it.trackTitle == "Mina - Se telefonando" })
+
+            // Recents must keep the station's own logo, never the song cover.
+            val recentStation = app.container.stations.recentsNow().firstOrNull { it.id == station.id }
+            assertEquals(logo, recentStation?.faviconUrl)
         }
     }
 
