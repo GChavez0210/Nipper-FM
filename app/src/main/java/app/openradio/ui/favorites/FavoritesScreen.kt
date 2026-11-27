@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.openradio.domain.PresetOrdering
 import app.openradio.domain.SavedStation
@@ -139,7 +141,6 @@ fun FavoritesScreen(
                     onClick = { vm.play(saved.station) },
                     onToggleFavorite = { vm.toggleFavorite(saved.station) },
                     trailing = {
-                        GroupTagButton(saved.groupName) { editingStationGroup = saved }
                         IconButton(
                             onClick = { vm.movePin(index, index - 1) },
                             enabled = index > 0,
@@ -386,6 +387,9 @@ private fun GroupTagButton(groupName: String?, onClick: () -> Unit) {
                 style = MaterialTheme.typography.labelSmall,
                 color = accent,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 96.dp),
             )
         }
     }
