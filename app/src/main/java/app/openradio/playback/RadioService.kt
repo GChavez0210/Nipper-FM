@@ -28,6 +28,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Metadata
 import androidx.media3.extractor.metadata.icy.IcyInfo
+import androidx.media3.extractor.metadata.id3.ApicFrame
+import androidx.media3.extractor.metadata.id3.TextInformationFrame
 import androidx.core.net.toUri
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -95,6 +97,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
 
@@ -116,10 +119,24 @@ class RadioService : MediaLibraryService() {
     /** What the session exposes: [player] with artist, song, and cover art split out of stream metadata. */
     private lateinit var sessionPlayer: TrackInfoPlayer
     private var session: MediaLibrarySession? = null
-    private val artworkClient by lazy { TrackArtworkClient(container.httpClient) }
+    private val artworkClient get() = container.artworkClient
     private var artworkJob: Job? = null
-    /** Raw stream title → cover URL sent in the ICY `StreamUrl` field, for the current song only. */
-    private var icyArtwork: Pair<String, String>? = null
+
+    /**
+     * Most recent ICY or ID3 track packet seen for the current station. Keeping the exact packet
+     * prevents ExoPlayer's cumulative ID3 metadata merging from leaking an older track's artist
+     * or embedded cover onto a newer title-only track.
+     */
+    private data class TrackPacket(
+        val mediaId: String?,
+        val title: String?,
+        val artist: String?,
+        val streamArtUrl: String?,
+        val hasEmbeddedArt: Boolean,
+    )
+
+    private var latestTrackPacket: TrackPacket? = null
+    private var trackPacketUpdated = false
     private lateinit var reconnect: ReconnectController
     private lateinit var sleepTimer: SleepTimer
     private val audioFx = AudioFxController()
@@ -330,14 +347,17 @@ class RadioService : MediaLibraryService() {
                 }
 
                 override fun getNotificationContentTitle(metadata: MediaMetadata): CharSequence? =
-                    metadata.title ?: metadata.station ?: metadata.displayTitle
+                    metadata.title?.takeIf { it.isNotBlank() } ?: metadata.station ?: metadata.displayTitle
 
-                override fun getNotificationContentText(metadata: MediaMetadata): CharSequence? =
-                    if (metadata.title != null && metadata.title != metadata.station) {
-                        listOfNotNull(metadata.artist, metadata.station ?: metadata.subtitle).joinToString(" · ")
+                override fun getNotificationContentText(metadata: MediaMetadata): CharSequence? {
+                    val title = metadata.title?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+                    val station = metadata.station?.toString()?.trim()
+                    return if (title != null && !title.equals(station, ignoreCase = true)) {
+                        listOfNotNull(metadata.artist?.takeIf { it.isNotBlank() }, metadata.station ?: metadata.subtitle).joinToString(" · ")
                     } else {
-                        metadata.subtitle ?: metadata.artist
+                        metadata.subtitle ?: metadata.artist?.takeIf { it.isNotBlank() }
                     }
+                }
             }.also {
                 it.setSmallIcon(R.drawable.ic_stat_radio)
             },
@@ -528,6 +548,10 @@ class RadioService : MediaLibraryService() {
             // retryPlayback() replaces the item in place; that is not a station change.
             if (id == currentStationId) return
             currentStationId = id
+            latestTrackPacket = null
+            trackPacketUpdated = false
+            artworkJob?.cancel()
+            sessionPlayer.updateEnrichment(null)
             if (id != wakeStationId) clearWakeRamp()
             cancelHeadsetResume()
             mobileDataOverrideOnce = false
@@ -596,28 +620,62 @@ class RadioService : MediaLibraryService() {
             }
         }
 
-        override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
-            val item = player.currentMediaItem ?: return
-            val station = item.toStation() ?: return
-            val track = TrackInfoParser.parse(
-                mediaMetadata.title?.toString(), mediaMetadata.artist?.toString(), station.name,
-            )
-            if (track != null) {
-                scope.launch { repo.recordOnAir(station, track.display) }
-                sleepTimer.onTrackTitle(track.display)
+        override fun onEvents(player: Player, events: Player.Events) {
+            if (events.contains(Player.EVENT_MEDIA_METADATA_CHANGED) || trackPacketUpdated) {
+                trackPacketUpdated = false
+                onTrackMetadataUpdated()
             }
-            enrichTrack()
-            updateWidget()
         }
 
         override fun onMetadata(metadata: Metadata) {
-            // Some Icecast and Shoutcast servers put a cover image URL in StreamUrl.
+            val mediaId = player.currentMediaItem?.mediaId ?: return
+            var icy: IcyInfo? = null
+            var id3Title: String? = null
+            var id3Artist: String? = null
+            var hasId3TrackFrame = false
+            var hasApic = false
             for (i in 0 until metadata.length()) {
-                val icy = metadata.get(i) as? IcyInfo ?: continue
-                val title = icy.title?.trim()?.takeIf { it.isNotEmpty() } ?: continue
-                val url = icy.url?.trim()?.takeIf(::looksLikeImageUrl) ?: continue
-                icyArtwork = title to url
-                enrichTrack()
+                when (val entry = metadata.get(i)) {
+                    is IcyInfo -> icy = entry
+                    is TextInformationFrame -> when (entry.id) {
+                        "TIT2", "TT2" -> {
+                            hasId3TrackFrame = true
+                            id3Title = entry.values.firstOrNull()
+                        }
+                        "TPE1", "TP1" -> {
+                            hasId3TrackFrame = true
+                            id3Artist = entry.values.firstOrNull()
+                        }
+                    }
+                    is ApicFrame -> hasApic = true
+                }
+            }
+            if (icy != null) {
+                val url = icy.url?.trim()?.takeIf(::looksLikeImageUrl)
+                latestTrackPacket = TrackPacket(
+                    mediaId = mediaId,
+                    title = icy.title,
+                    artist = null,
+                    streamArtUrl = url,
+                    hasEmbeddedArt = false,
+                )
+                trackPacketUpdated = true
+                return
+            }
+            if (hasId3TrackFrame || hasApic) {
+                val prev = latestTrackPacket?.takeIf { it.mediaId == mediaId }
+                val effectiveTitle = if (id3Title != null) id3Title else prev?.title
+                // A new TIT2 starts a new track, so an absent TPE1/APIC clears any previous artist/cover.
+                val effectiveArtist = if (id3Title != null) id3Artist else (id3Artist ?: prev?.artist)
+                val effectiveApic = if (id3Title != null) hasApic else (hasApic || prev?.hasEmbeddedArt == true)
+                latestTrackPacket = TrackPacket(
+                    mediaId = mediaId,
+                    title = effectiveTitle,
+                    artist = effectiveArtist,
+                    streamArtUrl = null,
+                    hasEmbeddedArt = effectiveApic,
+                )
+                trackPacketUpdated = true
             }
         }
 
@@ -671,30 +729,110 @@ class RadioService : MediaLibraryService() {
         }
     }
 
+    private fun currentTrack(): app.openradio.domain.TrackInfo? {
+        val item = player.currentMediaItem ?: return null
+        val station = item.toStation() ?: return null
+        val packet = latestTrackPacket?.takeIf { it.mediaId == item.mediaId }
+        val titleField = if (packet != null) packet.title else player.mediaMetadata.title?.toString()
+        val artistField = if (packet != null) packet.artist else player.mediaMetadata.artist?.toString()
+        return TrackInfoParser.parse(titleField, artistField, station.name)
+    }
+
+    private fun onTrackMetadataUpdated() {
+        val item = player.currentMediaItem ?: return
+        val station = item.toStation() ?: return
+        val track = currentTrack()
+        if (track != null) {
+            scope.launch { repo.recordOnAir(station, track.display) }
+            sleepTimer.onTrackTitle(track.display)
+        }
+        enrichTrack()
+        updateWidget()
+    }
+
     /**
      * Splits the current stream title into artist and song for the session, and adds cover art:
      * a `StreamUrl` image sent by the station, else (when enabled) an iTunes Search API match.
      */
     private fun enrichTrack() {
+        val item = player.currentMediaItem
+        val mediaId = item?.mediaId
+        val station = item?.toStation()
         val meta = player.mediaMetadata
-        val station = player.currentMediaItem?.toStation()
-        val raw = meta.title?.toString()?.trim().orEmpty()
-        val track = TrackInfoParser.parse(meta.title?.toString(), meta.artist?.toString(), station?.name)
-        if (station == null || track == null) {
+        val rawTitle = meta.title?.toString()?.trim().orEmpty()
+        val rawArtist = meta.artist?.toString()?.trim().orEmpty()
+        if (station == null) {
             artworkJob?.cancel()
             sessionPlayer.updateEnrichment(null)
             return
         }
-        val streamArt = icyArtwork?.takeIf { it.first == raw }?.second?.toUri()
+        val packet = latestTrackPacket?.takeIf { it.mediaId == mediaId }
+        val track = currentTrack()
+        val clearEmbedded = packet != null && !packet.hasEmbeddedArt
+        if (track == null) {
+            artworkJob?.cancel()
+            // Explicitly clear blank / station-name titles and any stale artist or APIC cover.
+            val hasStaleMetadata = meta.title != null || meta.artist != null || meta.artworkData != null
+            sessionPlayer.updateEnrichment(
+                if (hasStaleMetadata) {
+                    TrackInfoPlayer.Enrichment(
+                        mediaId = mediaId,
+                        rawTitle = rawTitle,
+                        rawArtist = rawArtist,
+                        track = null,
+                        artworkUri = null,
+                        clearEmbeddedArtwork = true,
+                    )
+                } else {
+                    null
+                },
+            )
+            return
+        }
+        val streamArt = packet?.streamArtUrl?.toUri()
         val current = sessionPlayer.enrichment
-        if (current?.rawTitle == raw && current.track == track && (streamArt == null || current.artworkUri == streamArt)) return
+        if (current != null &&
+            current.mediaId == mediaId &&
+            current.rawTitle == rawTitle &&
+            current.rawArtist == rawArtist &&
+            current.track == track &&
+            current.clearEmbeddedArtwork == clearEmbedded &&
+            (streamArt == null || current.artworkUri == streamArt)
+        ) return
         artworkJob?.cancel()
-        sessionPlayer.updateEnrichment(TrackInfoPlayer.Enrichment(raw, track, streamArt))
-        if (streamArt != null || !playbackPrefs.trackArtwork || !track.isSong || meta.artworkData != null) return
+        sessionPlayer.updateEnrichment(
+            TrackInfoPlayer.Enrichment(
+                mediaId = mediaId,
+                rawTitle = rawTitle,
+                rawArtist = rawArtist,
+                track = track,
+                artworkUri = streamArt,
+                clearEmbeddedArtwork = clearEmbedded,
+            ),
+        )
+        val hasCurrentEmbeddedArt = meta.artworkData != null && !clearEmbedded
+        if (streamArt != null || !playbackPrefs.trackArtwork || !track.isSong || hasCurrentEmbeddedArt) return
         artworkJob = scope.launch {
+            // Confirm persisted preference on cold start before making any network request.
+            if (!prefsRepo.playbackPrefs.first().trackArtwork) return@launch
             val url = artworkClient.artworkFor(track) ?: return@launch
-            if (player.mediaMetadata.title?.toString()?.trim() != raw) return@launch
-            sessionPlayer.updateEnrichment(TrackInfoPlayer.Enrichment(raw, track, url.toUri()))
+            val nowMeta = player.mediaMetadata
+            if (!playbackPrefs.trackArtwork ||
+                player.currentMediaItem?.mediaId != mediaId ||
+                nowMeta.title?.toString()?.trim().orEmpty() != rawTitle ||
+                nowMeta.artist?.toString()?.trim().orEmpty() != rawArtist ||
+                currentTrack() != track
+            ) return@launch
+            sessionPlayer.updateEnrichment(
+                TrackInfoPlayer.Enrichment(
+                    mediaId = mediaId,
+                    rawTitle = rawTitle,
+                    rawArtist = rawArtist,
+                    track = track,
+                    artworkUri = url.toUri(),
+                    clearEmbeddedArtwork = clearEmbedded,
+                ),
+            )
         }
     }
 

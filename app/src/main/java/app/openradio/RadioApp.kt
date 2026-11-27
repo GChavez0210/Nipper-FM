@@ -10,6 +10,7 @@ import app.openradio.data.PreferencesRepository
 import app.openradio.data.StationRepository
 import app.openradio.data.local.AppDatabase
 import app.openradio.data.remote.RadioBrowserClient
+import app.openradio.data.remote.TrackArtworkClient
 import app.openradio.playback.PlaybackConnection
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
@@ -21,6 +22,7 @@ class AppContainer(app: Application) {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
     val directory = RadioBrowserClient(httpClient)
+    var artworkClient = TrackArtworkClient(httpClient)
     private val database = Room.databaseBuilder(app, AppDatabase::class.java, "radio.db")
         .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5)
         .fallbackToDestructiveMigration(true)
